@@ -4,6 +4,7 @@ import argparse
 import csv
 from utils import key_derivation, skey_generate_otp
 
+
 def main(args):
     username = getpass.getuser()                # TODO -> pedir mesmo o nome (não usar o nome do utilizador do pc)
     password = getpass.getpass()
@@ -11,11 +12,15 @@ def main(args):
     password_derivation = key_derivation(args.password_hkdf_alg, args.password_hkdf_size, password.encode())
     root = os.urandom(args.root_size)
 
-    opt = skey_generate_otp(root, password_derivation, args.digest_algorithm, args.number_iterations)
+    otp = skey_generate_otp(root, password_derivation, args.digest_algorithm, args.number_iterations)
 
-    with open(f"credentials/{username}.csv", 'w') as file:
-        credentials_write = csv.writer(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-        credentials_write.writerow([args.number_iterations, root, opt])
+    # TODO -> meter isto mais bonito
+    with open(f"credentials/{username}_index", "wb") as file:
+        file.write(f"{args.number_iterations}".encode())
+    with open(f"credentials/{username}_root", "wb") as file:
+        file.write(root)
+    with open(f"credentials/{username}_otp", "wb") as file:
+        file.write(otp)
 
 
 if __name__ == "__main__":

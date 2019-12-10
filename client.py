@@ -5,6 +5,7 @@ import argparse
 import coloredlogs, logging
 import os
 import random
+import getpass
 from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
@@ -168,7 +169,8 @@ class ClientProtocol(asyncio.Protocol):
     def first_connection(self):
         logger.info(f"First connection with the server")
         message = {
-            "type": "FIRST_CONNECTION"
+            "type": "FIRST_CONNECTION",
+            "user": getpass.getuser()
         }
         self._send(message)
         # self.state = STATE_OPEN

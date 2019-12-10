@@ -5,6 +5,8 @@ import argparse
 import coloredlogs, logging
 import re
 import os
+import csv
+import base64
 from aio_tcpserver import tcp_server
 from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers, \
     key_derivation, length_by_cipher, decryption, MAC, \
@@ -109,7 +111,7 @@ class ClientHandler(asyncio.Protocol):
         print(f"{message}\n\n")
 
         if mtype == "FIRST_CONNECTION":
-            ret = self.send_nonce()
+            ret = self.send_challenge(message)
         if mtype == "OPEN":
             ret = self.process_open(message)
         elif mtype == "DATA":
@@ -140,13 +142,31 @@ class ClientHandler(asyncio.Protocol):
             self.state = STATE_CLOSE
             self.transport.close()
 
-    def send_nonce(self, nonce_size):
-        logger.info(f"Sending nonce")
+    def send_challenge(self, message):
+        logger.info(f"Sending challenge")
 
-        nonce = os.urandom(nonce_size)
+        username = message.get('user', None)
+
+        try:
+            with open(f"credentials/{username}_index", "rb") as file:
+                current_index = int(file.read())
+            with open(f"credentials/{username}_root", "rb") as file:
+                root = file.read()
+            with open(f"credentials/{username}_otp", "rb") as file:
+                otp = file.read()
+        except OSError as e:
+            logger.error(f"Error opening the file: {e}")
+            return False
+        except Exception as error:
+            logger.error(f"Unexpected error while reading the file: {error}")
+            return False
+
         message = {
-            "type": "NONCE",
-            "data": nonce
+            "type": "CHALLENGE",
+            "data": {
+                "index": current_index,
+                "root": base64.b64encode(root).decode()
+            }
         }
         self._send(message)
 
