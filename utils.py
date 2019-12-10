@@ -71,15 +71,13 @@ def cipher_params(cipher_algorithm, key):
 
 
 def key_derivation(hash_algorithm, length, key):
-    backend = default_backend()
-
     upper_hash_alg = hash_algorithm.upper()
     return HKDF(
         algorithm=getattr(hashes, upper_hash_alg)(),
         length=length,
         salt=None,
         info=b"",
-        backend=backend,
+        backend=default_backend(),
     ).derive(key)
 
 
@@ -181,3 +179,21 @@ def DH_parametersNumbers(p, g):
 def MAC(key, synthesis_algorithm):
     picked_hash = getattr(hashes, synthesis_algorithm)
     return hmac.HMAC(key, picked_hash(), backend=default_backend())
+
+
+def skey_generate_otp(root, password, synthesis_algorithm, iterations=10000):
+    # TODO -> depois pode se escolher o algoritmo
+
+    picked_hash = getattr(hashes, synthesis_algorithm)
+    h = MAC(password, synthesis_algorithm)
+    h.update(root)
+
+    result = h.finalize()
+    for i in range(iterations):
+        digest = hashes.Hash(picked_hash(), backend=default_backend())
+        digest.update(result)
+        result = digest.finalize()
+
+    return result
+
+

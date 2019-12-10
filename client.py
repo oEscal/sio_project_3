@@ -66,7 +66,9 @@ class ClientProtocol(asyncio.Protocol):
         logger.debug("Connected to Server")
 
         # send a list of all algorithms
-        self.send_algorithm()
+        # TODO -> MUDAR ISTO DE LUGAR
+        # self.send_algorithm()
+        self.first_connection()
 
     def data_received(self, data: str) -> None:
         """
@@ -92,8 +94,7 @@ class ClientProtocol(asyncio.Protocol):
             self.on_frame(frame)  # Process the frame
             idx = self.buffer.find("\r\n")
 
-        if len(self.buffer
-               ) > 4096 * 1024 * 1024:  # If buffer is larger than 4M
+        if len(self.buffer) > 4096 * 1024 * 1024:  # If buffer is larger than 4M
             logger.warning("Buffer to large")
             self.buffer = ""
             self.transport.close()
@@ -106,7 +107,7 @@ class ClientProtocol(asyncio.Protocol):
         :return:
         """
 
-        #logger.debug("Frame: {}".format(frame))
+        # logger.debug("Frame: {}".format(frame))
         try:
             message = json.loads(frame)
         except:
@@ -163,6 +164,14 @@ class ClientProtocol(asyncio.Protocol):
 
         self.transport.close()
         self.loop.stop()
+
+    def first_connection(self):
+        logger.info(f"First connection with the server")
+        message = {
+            "type": "FIRST_CONNECTION"
+        }
+        self._send(message)
+        # self.state = STATE_OPEN
 
     def process_DH(self):
         logger.info("Initializing DH")

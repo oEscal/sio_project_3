@@ -106,6 +106,10 @@ class ClientHandler(asyncio.Protocol):
 
         mtype = message.get("type", "").upper()
 
+        print(f"{message}\n\n")
+
+        if mtype == "FIRST_CONNECTION":
+            ret = self.send_nonce()
         if mtype == "OPEN":
             ret = self.process_open(message)
         elif mtype == "DATA":
@@ -135,6 +139,16 @@ class ClientHandler(asyncio.Protocol):
 
             self.state = STATE_CLOSE
             self.transport.close()
+
+    def send_nonce(self, nonce_size):
+        logger.info(f"Sending nonce")
+
+        nonce = os.urandom(nonce_size)
+        message = {
+            "type": "NONCE",
+            "data": nonce
+        }
+        self._send(message)
 
     def process_client_algorithm_pick(self, message: str) -> bool:
         """
