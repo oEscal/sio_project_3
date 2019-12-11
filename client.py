@@ -120,7 +120,10 @@ class ClientProtocol(asyncio.Protocol):
         if mtype == "CHALLENGE":
             self.login(message)
         elif mtype == "LOGIN":
-            print(message)
+            if message.get("status", None):
+                self.send_algorithm()
+            else:
+                logger.error("Wrong credentials")
         elif mtype == "OK":  # Server replied OK. We can advance the state
             if self.state == STATE_ALGORITHM_NEGOTIATION:
                 logger.info("Algorithm accepted from server")
