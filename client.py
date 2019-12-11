@@ -30,8 +30,6 @@ class ClientProtocol(asyncio.Protocol):
         :param loop: Asyncio Loop to use
         """
 
-        self.password = None
-
         self.file_name = file_name
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
@@ -124,12 +122,14 @@ class ClientProtocol(asyncio.Protocol):
         mtype = message.get("type", None)
         if mtype == "CHALLENGE":
             self.login(message)
+            return
         elif mtype == "UPDATE_CREDENTIALS":
             self.update_credentials(message)
+            return
         elif mtype == "OK":  # Server replied OK. We can advance the state
             if self.state == LOGIN_FINISH:
                 self.send_algorithm()
-            if self.state == STATE_ALGORITHM_NEGOTIATION:
+            elif self.state == STATE_ALGORITHM_NEGOTIATION:
                 logger.info("Algorithm accepted from server")
                 self.process_DH()
 
@@ -156,12 +156,14 @@ class ClientProtocol(asyncio.Protocol):
             logger.warning("Invalid State!")
 
         elif mtype == 'AVAILABLE_ALGORITHMS':
+            
             if self.state == STATE_ALGORITHM_NEGOTIATION:
                 self.chose_algorithm(message)
                 return
             logger.warning("Invalid state")
 
         elif mtype == "DH_PUBLIC_KEY":
+           
             if self.state == STATE_DH_EXCHANGE_KEYS:
                 self.get_server_DH_key(message)
                 return
@@ -173,8 +175,8 @@ class ClientProtocol(asyncio.Protocol):
         else:
             logger.warning("Invalid message type")
 
-        # self.transport.close()
-        # self.loop.stop()
+        self.transport.close()
+        self.loop.stop()
 
     def first_connection(self):
         if self.state != STATE_CONNECT:
@@ -192,16 +194,20 @@ class ClientProtocol(asyncio.Protocol):
         self.state = LOGIN
 
     def update_credentials(self, message):
-        if self.state != LOGIN_FINISH:
+        if self.state != LOGIN:
             logger.debug("Invalid state")
             self.transport.close()
             self.loop.stop()
+
+        logger.info("Creating new credentials")
+
+        password = getpass.getpass()
 
         data = message.get("data", None)
         new_root = base64.b64decode(data['root'].encode())
         new_index = data['index']
 
-        otp = self.generate_new_otp(self.password, new_root, new_index)
+        otp = self.generate_new_otp(password, new_root, new_index)
         message = {
             "type": "UPDATE_CREDENTIALS",
             "otp": base64.b64encode(otp).decode()
@@ -220,13 +226,12 @@ class ClientProtocol(asyncio.Protocol):
         index = data['index']
         root = base64.b64decode(data['root'].encode())
 
-        self.password = getpass.getpass()
-        otp = self.generate_new_otp(self.password, root, index)
+        password = getpass.getpass()
+        otp = self.generate_new_otp(password, root, index - 1)
 
         message = {
             "type": "LOGIN",
             "otp": base64.b64encode(otp).decode(),
-            "new_otp": None
         }
         self._send(message)
 
@@ -234,7 +239,7 @@ class ClientProtocol(asyncio.Protocol):
 
     def generate_new_otp(self, password, root, index):
         password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
-        return skey_generate_otp(root, password_derivation, "SHA256", index - 1)
+        return skey_generate_otp(root, password_derivation, "SHA256", index)
 
     def process_DH(self):
         logger.info("Initializing DH")
@@ -262,7 +267,7 @@ class ClientProtocol(asyncio.Protocol):
 
     def chose_algorithm(self, message):
         """Client pick an algorithm and sends to server"""
-
+        
         algorithms = message.get('data', None)
 
         if algorithms is not None:
@@ -298,6 +303,7 @@ class ClientProtocol(asyncio.Protocol):
                 'type': 'PICKED_ALGORITHM',
                 'data': self.current_algorithm.packing()
             }
+            
             self._send(message)
         else:
             logger.warning("No algorithms received!")
@@ -305,7 +311,6 @@ class ClientProtocol(asyncio.Protocol):
             self.loop.stop()
 
     def get_server_DH_key(self, message):
-
         key = message.get("key", None)
         if key is not None:
             logger.debug(f"Server DH_public_key : {key}")
@@ -337,11 +342,12 @@ class ClientProtocol(asyncio.Protocol):
         :param exc:
         :return:
         """
+        
         if self.state != LOGIN_FINISH:
             logger.debug("Invalid state")
             self.transport.close()
             self.loop.stop()
-
+        
         self.state = STATE_ALGORITHM_NEGOTIATION
 
         message = {"type": "ALGORITHM_NEGOTIATION"}

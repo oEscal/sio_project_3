@@ -36,8 +36,10 @@ class ClientHandler(asyncio.Protocol):
         self.current_otp_root = None
 
         # for new credentials
+        self.clear_credentials = False
         self.new_root = None
         self.new_index = None
+        self.new_otp = None
 
         self.signal = signal
         self.state = 0
@@ -118,10 +120,9 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
             return
 
-        mtype = message.get("type", "").upper()
-
         print(f"{message}\n\n")
 
+        mtype = message.get("type", "").upper()
         if mtype == "FIRST_CONNECTION":
             ret = self.send_challenge(message)
         elif mtype == "UPDATE_CREDENTIALS":
@@ -158,6 +159,15 @@ class ClientHandler(asyncio.Protocol):
             self.state = STATE_CLOSE
             self.transport.close()
 
+    def request_login_message(self):
+        return {
+            "type": "CHALLENGE",
+            "data": {
+                "index": self.current_otp_index,
+                "root": base64.b64encode(self.current_otp_root).decode()
+            }
+        }
+
     def send_challenge(self, message):
         if self.state != STATE_CONNECT:
             logger.warning("Invalid state. Discarding")
@@ -181,16 +191,27 @@ class ClientHandler(asyncio.Protocol):
             logger.error(f"Unexpected error while reading the file: {error}")
             return False
 
-        message = {
-            "type": "CHALLENGE",
-            "data": {
-                "index": self.current_otp_index,
-                "root": base64.b64encode(self.current_otp_root).decode()
-            }
-        }
-        self._send(message)
-        
+        message = self.request_login_message()
         self.state = LOGIN
+
+        # TODO -> depois meter a puder escolher o número minimo
+        if self.current_otp_index < 100:                            # request client to update current credentials
+            logger.info("Current credentials in end of life! Requesting new ones.")
+                
+            self.new_root = os.urandom(64)
+            self.new_index = 10000
+
+            message = {
+                "type": "UPDATE_CREDENTIALS",
+                "data": {
+                    "index": self.new_index,
+                    "root": base64.b64encode(self.new_root).decode()
+                }
+            }
+                
+            self.state = UPDATE_CREDENTIALS
+
+        self._send(message)
         return True
 
     def update_credentials(self, message):
@@ -200,21 +221,13 @@ class ClientHandler(asyncio.Protocol):
 
         logger.info(f"Creating new credentials")
 
-        new_otp = base64.b64decode(message.get("otp", None).encode())
+        self.new_otp = base64.b64decode(message.get("otp", None).encode())
+        self.clear_credentials = True                                   # if successful login -> save new credentials
 
-        with open(f"credentials/{self.username}_index", "wb") as file:
-            file.write(f"{self.new_index}".encode())
-        with open(f"credentials/{self.username}_root", "wb") as file:
-            file.write(self.new_root)
-        with open(f"credentials/{self.username}_otp", "wb") as file:
-            file.write(new_otp)
-
-        message = {
-            "type": "OK"
-        }
+        message = self.request_login_message()
         self._send(message)
 
-        self.state = LOGIN_FINISH
+        self.state = LOGIN
         return True
 
     def login(self, message):
@@ -236,6 +249,13 @@ class ClientHandler(asyncio.Protocol):
         if self.current_otp == current_otp_client:                      # success login
             status = True
 
+            if self.clear_credentials:
+                logger.info("Clearing old credentials and saving new ones.")
+
+                self.current_otp_index = self.new_index + 1
+                self.current_otp_root = self.new_root 
+                new_otp = self.new_otp
+
             with open(f"credentials/{self.username}_index", "wb") as file:
                 file.write(f"{self.current_otp_index - 1}".encode())
             with open(f"credentials/{self.username}_root", "wb") as file:
@@ -246,26 +266,7 @@ class ClientHandler(asyncio.Protocol):
             message = {
                 "type": "OK"
             }
-
             self.state = LOGIN_FINISH
-
-            # TODO -> depois meter a puder escolher o número minimo
-            print(self.current_otp_index)
-            if self.current_otp_index < 100:                            # request client to update current credentials
-                logger.info("Current credentials in end of life! Requesting new ones.")
-                
-                self.new_root = os.urandom(64)
-                self.new_index = 10000
-
-                message = {
-                    "type": "UPDATE_CREDENTIALS",
-                    "data": {
-                        "index": self.new_index,
-                        "root": base64.b64encode(self.new_root).decode()
-                    }
-                }
-                
-                self.state = UPDATE_CREDENTIALS
                 
             logger.info("User logged in with success! Credentials updated.")
         else:
@@ -278,6 +279,7 @@ class ClientHandler(asyncio.Protocol):
         """
             Reads client algorithm pick
         """
+        
         if self.state != STATE_ALGORITHMS:
             logger.warning("Invalid State")
             return False
@@ -304,10 +306,10 @@ class ClientHandler(asyncio.Protocol):
 			Reads client DH_public_key,p and g parameters
 			Also server creates their own DH_keys and sent public key to server
 		"""
-
+        
         if not (self.state == STATE_ALGORITHM_ACK or self.state == STATE_DATA):
             return False
-
+        
         data = message.get("data", None)
         if data is None:
             return False
@@ -324,11 +326,8 @@ class ClientHandler(asyncio.Protocol):
             self.dh_public_key = self.dh_private_key.public_key()
 
             message = {
-                "type":
-                "DH_PUBLIC_KEY",
-                "key":
-                self.dh_public_key.public_bytes(
-                    Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
+                "type": "DH_PUBLIC_KEY",
+                "key": self.dh_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
             }
 
             self._send(message)
@@ -520,11 +519,11 @@ class ClientHandler(asyncio.Protocol):
 		:param message: The message to process
 		:return: Boolean indicating the success of the operation
 		"""
-
+        
         if self.state != LOGIN_FINISH:
             logger.warning("Invalid state. Discarding")
             return False
-
+        
         client_algorithms = message.get("data", None)
         logger.info(f"Client algorithms : {client_algorithms}")
 
@@ -558,6 +557,7 @@ class ClientHandler(asyncio.Protocol):
 
         self._send(message)
         self.state = STATE_ALGORITHMS
+        
         return True
 
     def _send(self, message: str) -> None:
