@@ -28,10 +28,16 @@ class ClientHandler(asyncio.Protocol):
 		Default constructor
 		"""
 
+        # for challenge
         self.username = None
         self.current_otp = None
         self.current_otp_index = None
         self.current_otp_root = None
+
+        # for new credentials
+        self.update_credentials = False
+        self.new_root = None
+        self.new_index = None
 
         self.signal = signal
         self.state = 0
@@ -174,10 +180,17 @@ class ClientHandler(asyncio.Protocol):
             "data": {
                 "index": self.current_otp_index,
                 "root": base64.b64encode(self.current_otp_root).decode()
-            }
+            },
+            "update_credentials": False
         }
-        self._send(message)
 
+        # TODO -> depois meter a puder escolher o número minimo
+        if index < 100:                                                 # update credentials (the current credentials have shot life time)
+            message["update_credentials"] = self.update_credentials = True
+            message["data"]["new_root"] = self.new_root = os.urandom(args.root_size)
+            message["data"]["new_index"] = self.new_index = 10000
+        
+        self._send(message)
         return True
 
     def login(self, message):
@@ -193,12 +206,21 @@ class ClientHandler(asyncio.Protocol):
         if self.current_otp == current_otp_client:                      # success login
             status = True
 
-            with open(f"credentials/{self.username}_index", "wb") as file:
-                file.write(f"{self.current_otp_index - 1}".encode())
-            with open(f"credentials/{self.username}_root", "wb") as file:
-                file.write(self.current_otp_root)
-            with open(f"credentials/{self.username}_otp", "wb") as file:
-                file.write(new_otp)
+            if self.update_credentials:
+                new_otp = message.get("new_otp", None)
+                if not new_otp:
+                    return False
+                else:
+                    self.current_otp_index = self.new_index
+                    self.current_otp_root = self.new_root
+                    logger.info("New credentials accepted")
+
+                with open(f"credentials/{self.username}_index", "wb") as file:
+                    file.write(f"{self.current_otp_index - 1}".encode())
+                with open(f"credentials/{self.username}_root", "wb") as file:
+                    file.write(self.current_otp_root)
+                with open(f"credentials/{self.username}_otp", "wb") as file:
+                    file.write(new_otp)
 
             logger.info("User logged in with success! Credentials updated.")
         else:

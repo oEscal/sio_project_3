@@ -188,14 +188,24 @@ class ClientProtocol(asyncio.Protocol):
         root = base64.b64decode(data['root'].encode())
 
         password = getpass.getpass()
-        password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
-        otp = skey_generate_otp(root, password_derivation, "SHA256", index - 1)
+        otp = self.generate_new_otp(password, root, index)
 
         message = {
             "type": "LOGIN",
-            "otp": base64.b64encode(otp).decode()
+            "otp": base64.b64encode(otp).decode(),
+            "new_otp": None
         }
+
+        if message.get("update_credentials", None):                                 # update current credentials
+            new_root = data['new_root']
+            new_index = data['new_index']
+            message["new_otp"] = self.generate_new_otp(password, new_root, new_index)
+
         self._send(message)
+
+    def generate_new_otp(self, password, root, index):
+        password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
+        return skey_generate_otp(root, password_derivation, "SHA256", index - 1)
 
     def process_DH(self):
         logger.info("Initializing DH")
