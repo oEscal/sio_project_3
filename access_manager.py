@@ -1,8 +1,6 @@
 import json
 import argparse
-
-
-ACCESS_FILE = "access/users.json"
+from utils import ACCESS_CHECKED
 
 
 def get_access_list():

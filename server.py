@@ -12,7 +12,7 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, digest
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, digest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -263,9 +263,21 @@ class ClientHandler(asyncio.Protocol):
             with open(f"credentials/{self.username}_otp", "wb") as file:
                 file.write(new_otp)
 
-            message = {
-                "type": "OK"
-            }
+            access_result = self.check_access()                         # very access
+            if not access_result[0]:
+                logger.warning(access_result[1])
+
+                status = False
+                message = {
+                    "type": "ERROR",
+                    "message": access_result[1]
+                }
+            else:
+                message = {
+                    "type": "OK"
+                }
+                logger.info(access_result[1])
+
             self.state = LOGIN_FINISH
                 
             logger.info("User logged in with success! Credentials updated.")
@@ -274,6 +286,18 @@ class ClientHandler(asyncio.Protocol):
         
         self._send(message)
         return status
+
+    def check_access(self):
+        logger.info("Verifying access")
+
+        with open(ACCESS_FILE, 'r') as file:
+            data = json.load(file)
+
+        if self.username not in data:
+            return False, "User not in access list"
+        elif not data[self.username]["send"]:
+            return False, "User has not access to transfer files"
+        return True, "User has access to transfer files"
 
     def process_client_algorithm_pick(self, message: str) -> bool:
         """
