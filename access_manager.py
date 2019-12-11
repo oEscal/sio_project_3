@@ -1,5 +1,4 @@
 import json
-import getpass
 import argparse
 
 
@@ -20,7 +19,7 @@ def main(args):
     data = get_access_list()
 
     if args.add_user:
-        new_user = getpass.getuser()
+        new_user = input("User name: ")
         if new_user in data:
             print("This user already is in access list")
             return
@@ -30,7 +29,7 @@ def main(args):
 
         save_access_list(data)
     elif args.remove_user:
-        user_remove = getpass.getuser()
+        user_remove = input("User name: ")
         if user_remove not in data:
             print("This user doesn't exist in access list")
             return
@@ -39,7 +38,7 @@ def main(args):
 
         save_access_list(data)
     elif args.change_access:
-        user = getpass.getuser()
+        user = input("User name: ")
         if user not in data:
             print("This user doesn't exist in access list")
             return
