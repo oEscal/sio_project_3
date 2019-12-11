@@ -9,7 +9,7 @@ import getpass
 from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
-    STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS
+    STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, skey_generate_otp
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -117,7 +117,11 @@ class ClientProtocol(asyncio.Protocol):
             return
 
         mtype = message.get("type", None)
-        if mtype == "OK":  # Server replied OK. We can advance the state
+        if mtype == "CHALLENGE":
+            self.login(message)
+        elif mtype == "LOGIN":
+            print(message)
+        elif mtype == "OK":  # Server replied OK. We can advance the state
             if self.state == STATE_ALGORITHM_NEGOTIATION:
                 logger.info("Algorithm accepted from server")
                 self.process_DH()
@@ -131,7 +135,6 @@ class ClientProtocol(asyncio.Protocol):
             else:
                 logger.warning("Ignoring message from server")
             return
-
         elif mtype == "ITERATIONS_PER_KEY":
             if self.state == STATE_OPEN:
                 iterations_per_key = message.get("data", None)
@@ -163,8 +166,8 @@ class ClientProtocol(asyncio.Protocol):
         else:
             logger.warning("Invalid message type")
 
-        self.transport.close()
-        self.loop.stop()
+        # self.transport.close()
+        # self.loop.stop()
 
     def first_connection(self):
         logger.info(f"First connection with the server")
@@ -173,7 +176,23 @@ class ClientProtocol(asyncio.Protocol):
             "user": getpass.getuser()
         }
         self._send(message)
-        # self.state = STATE_OPEN
+
+    def login(self, message):
+        logger.info(f"Loging in")
+
+        data = message.get("data", None)
+        index = data['index']
+        root = base64.b64decode(data['root'].encode())
+
+        password = getpass.getpass()
+        password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
+        otp = skey_generate_otp(root, password_derivation, "SHA256", index - 1)
+
+        message = {
+            "type": "LOGIN",
+            "otp": base64.b64encode(otp).decode()
+        }
+        self._send(message)
 
     def process_DH(self):
         logger.info("Initializing DH")

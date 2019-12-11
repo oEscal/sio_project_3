@@ -183,16 +183,17 @@ def MAC(key, synthesis_algorithm):
 def skey_generate_otp(root, password, synthesis_algorithm, iterations=10000):
     # TODO -> depois pode se escolher o algoritmo
 
-    picked_hash = getattr(hashes, synthesis_algorithm)
     h = MAC(password, synthesis_algorithm)
     h.update(root)
 
     result = h.finalize()
     for i in range(iterations):
-        digest = hashes.Hash(picked_hash(), backend=default_backend())
-        digest.update(result)
-        result = digest.finalize()
+        result = digest(result, synthesis_algorithm)
 
     return result
 
-
+def digest(init, synthesis_algorithm):
+    picked_hash = getattr(hashes, synthesis_algorithm)
+    digest = hashes.Hash(picked_hash(), backend=default_backend())
+    digest.update(init)
+    return digest.finalize()

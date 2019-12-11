@@ -11,7 +11,7 @@ from aio_tcpserver import tcp_server
 from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers, \
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
-    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS
+    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, digest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -27,6 +27,12 @@ class ClientHandler(asyncio.Protocol):
         """
 		Default constructor
 		"""
+
+        self.username = None
+        self.current_otp = None
+        self.current_otp_index = None
+        self.current_otp_root = None
+
         self.signal = signal
         self.state = 0
         self.file = None
@@ -112,7 +118,9 @@ class ClientHandler(asyncio.Protocol):
 
         if mtype == "FIRST_CONNECTION":
             ret = self.send_challenge(message)
-        if mtype == "OPEN":
+        elif mtype == "LOGIN":
+            ret = self.login(message)
+        elif mtype == "OPEN":
             ret = self.process_open(message)
         elif mtype == "DATA":
             ret = self.process_data(message)
@@ -145,15 +153,15 @@ class ClientHandler(asyncio.Protocol):
     def send_challenge(self, message):
         logger.info(f"Sending challenge")
 
-        username = message.get('user', None)
+        self.username = message.get('user', None)
 
         try:
-            with open(f"credentials/{username}_index", "rb") as file:
-                current_index = int(file.read())
-            with open(f"credentials/{username}_root", "rb") as file:
-                root = file.read()
-            with open(f"credentials/{username}_otp", "rb") as file:
-                otp = file.read()
+            with open(f"credentials/{self.username}_index", "rb") as file:
+                self.current_otp_index = int(file.read())
+            with open(f"credentials/{self.username}_root", "rb") as file:
+                self.current_otp_root = file.read()
+            with open(f"credentials/{self.username}_otp", "rb") as file:
+                self.current_otp = file.read()
         except OSError as e:
             logger.error(f"Error opening the file: {e}")
             return False
@@ -164,11 +172,42 @@ class ClientHandler(asyncio.Protocol):
         message = {
             "type": "CHALLENGE",
             "data": {
-                "index": current_index,
-                "root": base64.b64encode(root).decode()
+                "index": self.current_otp_index,
+                "root": base64.b64encode(self.current_otp_root).decode()
             }
         }
         self._send(message)
+
+        return True
+
+    def login(self, message):
+        logger.info(f"Loging in")
+
+        new_otp = base64.b64decode(message.get("otp", None).encode())
+        current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
+
+        status = False                                                  # status = False -> if login wasn't a success
+        message = {
+            "type": "LOGIN"
+        }
+        if self.current_otp == current_otp_client:                      # success login
+            status = True
+
+            with open(f"credentials/{self.username}_index", "wb") as file:
+                file.write(f"{self.current_otp_index - 1}".encode())
+            with open(f"credentials/{self.username}_root", "wb") as file:
+                file.write(self.current_otp_root)
+            with open(f"credentials/{self.username}_otp", "wb") as file:
+                file.write(new_otp)
+
+            logger.info("User logged in with success! Credentials updated.")
+        else:
+            logger.info("User not logged in! Wrong credentials where given.")
+        
+        message["status"] = status
+        self._send(message)
+
+        return status
 
     def process_client_algorithm_pick(self, message: str) -> bool:
         """
