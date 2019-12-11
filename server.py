@@ -5,11 +5,14 @@ import argparse
 import coloredlogs, logging
 import re
 import os
+import csv
+import base64
 from aio_tcpserver import tcp_server
 from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers, \
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
-    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS
+    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
+    LOGIN_FINISH, digest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -25,6 +28,19 @@ class ClientHandler(asyncio.Protocol):
         """
 		Default constructor
 		"""
+
+        # for challenge
+        self.username = None
+        self.current_otp = None
+        self.current_otp_index = None
+        self.current_otp_root = None
+
+        # for new credentials
+        self.clear_credentials = False
+        self.new_root = None
+        self.new_index = None
+        self.new_otp = None
+
         self.signal = signal
         self.state = 0
         self.file = None
@@ -104,9 +120,16 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
             return
 
-        mtype = message.get("type", "").upper()
+        print(f"{message}\n\n")
 
-        if mtype == "OPEN":
+        mtype = message.get("type", "").upper()
+        if mtype == "FIRST_CONNECTION":
+            ret = self.send_challenge(message)
+        elif mtype == "UPDATE_CREDENTIALS":
+            ret = self.update_credentials(message)
+        elif mtype == "LOGIN":
+            ret = self.login(message)
+        elif mtype == "OPEN":
             ret = self.process_open(message)
         elif mtype == "DATA":
             ret = self.process_data(message)
@@ -136,10 +159,127 @@ class ClientHandler(asyncio.Protocol):
             self.state = STATE_CLOSE
             self.transport.close()
 
+    def request_login_message(self):
+        return {
+            "type": "CHALLENGE",
+            "data": {
+                "index": self.current_otp_index,
+                "root": base64.b64encode(self.current_otp_root).decode()
+            }
+        }
+
+    def send_challenge(self, message):
+        if self.state != STATE_CONNECT:
+            logger.warning("Invalid state. Discarding")
+            return False
+
+        logger.info(f"Sending challenge")
+
+        self.username = message.get('user', None)
+
+        try:
+            with open(f"credentials/{self.username}_index", "rb") as file:
+                self.current_otp_index = int(file.read())
+            with open(f"credentials/{self.username}_root", "rb") as file:
+                self.current_otp_root = file.read()
+            with open(f"credentials/{self.username}_otp", "rb") as file:
+                self.current_otp = file.read()
+        except OSError as e:
+            logger.error(f"Error opening the file: {e}")
+            return False
+        except Exception as error:
+            logger.error(f"Unexpected error while reading the file: {error}")
+            return False
+
+        message = self.request_login_message()
+        self.state = LOGIN
+
+        # TODO -> depois meter a puder escolher o número minimo
+        if self.current_otp_index < 100:                            # request client to update current credentials
+            logger.info("Current credentials in end of life! Requesting new ones.")
+                
+            self.new_root = os.urandom(64)
+            self.new_index = 10000
+
+            message = {
+                "type": "UPDATE_CREDENTIALS",
+                "data": {
+                    "index": self.new_index,
+                    "root": base64.b64encode(self.new_root).decode()
+                }
+            }
+                
+            self.state = UPDATE_CREDENTIALS
+
+        self._send(message)
+        return True
+
+    def update_credentials(self, message):
+        if self.state != UPDATE_CREDENTIALS:
+            logger.warning("Invalid State")
+            return False
+
+        logger.info(f"Creating new credentials")
+
+        self.new_otp = base64.b64decode(message.get("otp", None).encode())
+        self.clear_credentials = True                                   # if successful login -> save new credentials
+
+        message = self.request_login_message()
+        self._send(message)
+
+        self.state = LOGIN
+        return True
+
+    def login(self, message):
+        if self.state != LOGIN:
+            logger.warning("Invalid State")
+            return False
+
+        logger.info(f"Loging in")
+
+        new_otp = base64.b64decode(message.get("otp", None).encode())
+        current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
+
+        status = False                                                  # status = False -> if login wasn't a success
+        message = {
+            "type": "ERROR",
+            "message": "Invalid credentials for logging in"
+        }
+
+        if self.current_otp == current_otp_client:                      # success login
+            status = True
+
+            if self.clear_credentials:
+                logger.info("Clearing old credentials and saving new ones.")
+
+                self.current_otp_index = self.new_index + 1
+                self.current_otp_root = self.new_root 
+                new_otp = self.new_otp
+
+            with open(f"credentials/{self.username}_index", "wb") as file:
+                file.write(f"{self.current_otp_index - 1}".encode())
+            with open(f"credentials/{self.username}_root", "wb") as file:
+                file.write(self.current_otp_root)
+            with open(f"credentials/{self.username}_otp", "wb") as file:
+                file.write(new_otp)
+
+            message = {
+                "type": "OK"
+            }
+            self.state = LOGIN_FINISH
+                
+            logger.info("User logged in with success! Credentials updated.")
+        else:
+            logger.info("User not logged in! Wrong credentials where given.")
+        
+        self._send(message)
+        return status
+
     def process_client_algorithm_pick(self, message: str) -> bool:
         """
             Reads client algorithm pick
         """
+        
         if self.state != STATE_ALGORITHMS:
             logger.warning("Invalid State")
             return False
@@ -166,10 +306,10 @@ class ClientHandler(asyncio.Protocol):
 			Reads client DH_public_key,p and g parameters
 			Also server creates their own DH_keys and sent public key to server
 		"""
-
+        
         if not (self.state == STATE_ALGORITHM_ACK or self.state == STATE_DATA):
             return False
-
+        
         data = message.get("data", None)
         if data is None:
             return False
@@ -186,11 +326,8 @@ class ClientHandler(asyncio.Protocol):
             self.dh_public_key = self.dh_private_key.public_key()
 
             message = {
-                "type":
-                "DH_PUBLIC_KEY",
-                "key":
-                self.dh_public_key.public_bytes(
-                    Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
+                "type": "DH_PUBLIC_KEY",
+                "key": self.dh_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
             }
 
             self._send(message)
@@ -382,11 +519,11 @@ class ClientHandler(asyncio.Protocol):
 		:param message: The message to process
 		:return: Boolean indicating the success of the operation
 		"""
-
-        if self.state != STATE_CONNECT:
+        
+        if self.state != LOGIN_FINISH:
             logger.warning("Invalid state. Discarding")
             return False
-
+        
         client_algorithms = message.get("data", None)
         logger.info(f"Client algorithms : {client_algorithms}")
 
@@ -420,6 +557,7 @@ class ClientHandler(asyncio.Protocol):
 
         self._send(message)
         self.state = STATE_ALGORITHMS
+        
         return True
 
     def _send(self, message: str) -> None:

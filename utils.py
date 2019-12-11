@@ -1,5 +1,6 @@
-import getpass
 import os
+import binascii
+import random
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -7,8 +8,6 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.backends.interfaces import CipherBackend
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-import binascii
-import random
 
 
 # States common betwen the server and the client
@@ -17,6 +16,8 @@ STATE_OPEN = 1
 STATE_DATA = 2
 STATE_CLOSE = 3
 STATE_DH_EXCHANGE_KEYS = 6
+LOGIN = 7
+LOGIN_FINISH = 9
 
 # Client's states
 STATE_KEY = 4
@@ -25,6 +26,7 @@ STATE_ALGORITHM_NEGOTIATION = 5
 # Server's states
 STATE_ALGORITHMS = 4
 STATE_ALGORITHM_ACK = 5
+UPDATE_CREDENTIALS = 8
 
 
 
@@ -71,15 +73,13 @@ def cipher_params(cipher_algorithm, key):
 
 
 def key_derivation(hash_algorithm, length, key):
-    backend = default_backend()
-
     upper_hash_alg = hash_algorithm.upper()
     return HKDF(
         algorithm=getattr(hashes, upper_hash_alg)(),
         length=length,
         salt=None,
         info=b"",
-        backend=backend,
+        backend=default_backend(),
     ).derive(key)
 
 
@@ -181,3 +181,22 @@ def DH_parametersNumbers(p, g):
 def MAC(key, synthesis_algorithm):
     picked_hash = getattr(hashes, synthesis_algorithm)
     return hmac.HMAC(key, picked_hash(), backend=default_backend())
+
+
+def skey_generate_otp(root, password, synthesis_algorithm, iterations=10000):
+    # TODO -> depois pode se escolher o algoritmo
+
+    h = MAC(password, synthesis_algorithm)
+    h.update(root)
+
+    result = h.finalize()
+    for i in range(iterations):
+        result = digest(result, synthesis_algorithm)
+
+    return result
+
+def digest(init, synthesis_algorithm):
+    picked_hash = getattr(hashes, synthesis_algorithm)
+    digest = hashes.Hash(picked_hash(), backend=default_backend())
+    digest.update(init)
+    return digest.finalize()
