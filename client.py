@@ -9,7 +9,8 @@ import getpass
 from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
-    STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, skey_generate_otp
+    STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, LOGIN, LOGIN_FINISH, \
+    skey_generate_otp
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -28,6 +29,8 @@ class ClientProtocol(asyncio.Protocol):
         :param file_name: Name of the file to send
         :param loop: Asyncio Loop to use
         """
+
+        self.password = None
 
         self.file_name = file_name
         self.loop = loop
@@ -116,15 +119,16 @@ class ClientProtocol(asyncio.Protocol):
             self.transport.close()
             return
 
+        print(f"{message}\n\n")
+
         mtype = message.get("type", None)
         if mtype == "CHALLENGE":
             self.login(message)
-        elif mtype == "LOGIN":
-            if message.get("status", None):
-                self.send_algorithm()
-            else:
-                logger.error("Wrong credentials")
+        elif mtype == "UPDATE_CREDENTIALS":
+            self.update_credentials(message)
         elif mtype == "OK":  # Server replied OK. We can advance the state
+            if self.state == LOGIN_FINISH:
+                self.send_algorithm()
             if self.state == STATE_ALGORITHM_NEGOTIATION:
                 logger.info("Algorithm accepted from server")
                 self.process_DH()
@@ -173,6 +177,11 @@ class ClientProtocol(asyncio.Protocol):
         # self.loop.stop()
 
     def first_connection(self):
+        if self.state != STATE_CONNECT:
+            logger.debug("Invalid state")
+            self.transport.close()
+            self.loop.stop()
+
         logger.info(f"First connection with the server")
         message = {
             "type": "FIRST_CONNECTION",
@@ -180,28 +189,48 @@ class ClientProtocol(asyncio.Protocol):
         }
         self._send(message)
 
+        self.state = LOGIN
+
+    def update_credentials(self, message):
+        if self.state != LOGIN_FINISH:
+            logger.debug("Invalid state")
+            self.transport.close()
+            self.loop.stop()
+
+        data = message.get("data", None)
+        new_root = base64.b64decode(data['root'].encode())
+        new_index = data['index']
+
+        otp = self.generate_new_otp(self.password, new_root, new_index)
+        message = {
+            "type": "UPDATE_CREDENTIALS",
+            "otp": base64.b64encode(otp).decode()
+        }
+        self._send(message)
+
     def login(self, message):
+        if self.state != LOGIN:
+            logger.debug("Invalid state")
+            self.transport.close()
+            self.loop.stop()
+
         logger.info(f"Loging in")
 
         data = message.get("data", None)
         index = data['index']
         root = base64.b64decode(data['root'].encode())
 
-        password = getpass.getpass()
-        otp = self.generate_new_otp(password, root, index)
+        self.password = getpass.getpass()
+        otp = self.generate_new_otp(self.password, root, index)
 
         message = {
             "type": "LOGIN",
             "otp": base64.b64encode(otp).decode(),
             "new_otp": None
         }
-
-        if message.get("update_credentials", None):                                 # update current credentials
-            new_root = data['new_root']
-            new_index = data['new_index']
-            message["new_otp"] = self.generate_new_otp(password, new_root, new_index)
-
         self._send(message)
+
+        self.state = LOGIN_FINISH
 
     def generate_new_otp(self, password, root, index):
         password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
@@ -308,7 +337,7 @@ class ClientProtocol(asyncio.Protocol):
         :param exc:
         :return:
         """
-        if self.state != STATE_CONNECT:
+        if self.state != LOGIN_FINISH:
             logger.debug("Invalid state")
             self.transport.close()
             self.loop.stop()

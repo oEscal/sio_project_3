@@ -11,7 +11,8 @@ from aio_tcpserver import tcp_server
 from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers, \
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
-    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, digest
+    STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
+    LOGIN_FINISH, digest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -35,7 +36,6 @@ class ClientHandler(asyncio.Protocol):
         self.current_otp_root = None
 
         # for new credentials
-        self.update_credentials = False
         self.new_root = None
         self.new_index = None
 
@@ -124,6 +124,8 @@ class ClientHandler(asyncio.Protocol):
 
         if mtype == "FIRST_CONNECTION":
             ret = self.send_challenge(message)
+        elif mtype == "UPDATE_CREDENTIALS":
+            ret = self.update_credentials(message)
         elif mtype == "LOGIN":
             ret = self.login(message)
         elif mtype == "OPEN":
@@ -157,6 +159,10 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
 
     def send_challenge(self, message):
+        if self.state != STATE_CONNECT:
+            logger.warning("Invalid state. Discarding")
+            return False
+
         logger.info(f"Sending challenge")
 
         self.username = message.get('user', None)
@@ -180,20 +186,42 @@ class ClientHandler(asyncio.Protocol):
             "data": {
                 "index": self.current_otp_index,
                 "root": base64.b64encode(self.current_otp_root).decode()
-            },
-            "update_credentials": False
+            }
         }
-
-        # TODO -> depois meter a puder escolher o número minimo
-        if index < 100:                                                 # update credentials (the current credentials have shot life time)
-            message["update_credentials"] = self.update_credentials = True
-            message["data"]["new_root"] = self.new_root = os.urandom(args.root_size)
-            message["data"]["new_index"] = self.new_index = 10000
-        
         self._send(message)
+        
+        self.state = LOGIN
+        return True
+
+    def update_credentials(self, message):
+        if self.state != UPDATE_CREDENTIALS:
+            logger.warning("Invalid State")
+            return False
+
+        logger.info(f"Creating new credentials")
+
+        new_otp = base64.b64decode(message.get("otp", None).encode())
+
+        with open(f"credentials/{self.username}_index", "wb") as file:
+            file.write(f"{self.new_index}".encode())
+        with open(f"credentials/{self.username}_root", "wb") as file:
+            file.write(self.new_root)
+        with open(f"credentials/{self.username}_otp", "wb") as file:
+            file.write(new_otp)
+
+        message = {
+            "type": "OK"
+        }
+        self._send(message)
+
+        self.state = LOGIN_FINISH
         return True
 
     def login(self, message):
+        if self.state != LOGIN:
+            logger.warning("Invalid State")
+            return False
+
         logger.info(f"Loging in")
 
         new_otp = base64.b64decode(message.get("otp", None).encode())
@@ -201,34 +229,49 @@ class ClientHandler(asyncio.Protocol):
 
         status = False                                                  # status = False -> if login wasn't a success
         message = {
-            "type": "LOGIN"
+            "type": "ERROR",
+            "message": "Invalid credentials for logging in"
         }
+
         if self.current_otp == current_otp_client:                      # success login
             status = True
 
-            if self.update_credentials:
-                new_otp = message.get("new_otp", None)
-                if not new_otp:
-                    return False
-                else:
-                    self.current_otp_index = self.new_index
-                    self.current_otp_root = self.new_root
-                    logger.info("New credentials accepted")
+            with open(f"credentials/{self.username}_index", "wb") as file:
+                file.write(f"{self.current_otp_index - 1}".encode())
+            with open(f"credentials/{self.username}_root", "wb") as file:
+                file.write(self.current_otp_root)
+            with open(f"credentials/{self.username}_otp", "wb") as file:
+                file.write(new_otp)
 
-                with open(f"credentials/{self.username}_index", "wb") as file:
-                    file.write(f"{self.current_otp_index - 1}".encode())
-                with open(f"credentials/{self.username}_root", "wb") as file:
-                    file.write(self.current_otp_root)
-                with open(f"credentials/{self.username}_otp", "wb") as file:
-                    file.write(new_otp)
+            message = {
+                "type": "OK"
+            }
 
+            self.state = LOGIN_FINISH
+
+            # TODO -> depois meter a puder escolher o número minimo
+            print(self.current_otp_index)
+            if self.current_otp_index < 100:                            # request client to update current credentials
+                logger.info("Current credentials in end of life! Requesting new ones.")
+                
+                self.new_root = os.urandom(64)
+                self.new_index = 10000
+
+                message = {
+                    "type": "UPDATE_CREDENTIALS",
+                    "data": {
+                        "index": self.new_index,
+                        "root": base64.b64encode(self.new_root).decode()
+                    }
+                }
+                
+                self.state = UPDATE_CREDENTIALS
+                
             logger.info("User logged in with success! Credentials updated.")
         else:
             logger.info("User not logged in! Wrong credentials where given.")
         
-        message["status"] = status
         self._send(message)
-
         return status
 
     def process_client_algorithm_pick(self, message: str) -> bool:
@@ -478,7 +521,7 @@ class ClientHandler(asyncio.Protocol):
 		:return: Boolean indicating the success of the operation
 		"""
 
-        if self.state != STATE_CONNECT:
+        if self.state != LOGIN_FINISH:
             logger.warning("Invalid state. Discarding")
             return False
 
