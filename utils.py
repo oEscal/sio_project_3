@@ -30,6 +30,11 @@ STATE_ALGORITHM_ACK = 5
 UPDATE_CREDENTIALS = 8
 
 
+# authentication types for server
+AUTH_CC = "citizen_card"
+AUTH_MEM = "memorized_key"
+
+
 ACCESS_FILE = "access/users.json"
 
 length_by_cipher = {"ChaCha20": 32, "AES": 32, "TripleDES": 24}

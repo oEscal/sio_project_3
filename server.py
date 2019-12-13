@@ -12,7 +12,7 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, digest
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, digest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -22,6 +22,7 @@ logger = logging.getLogger("root")
 # GLOBAL
 STORAGE_DIR = "files"
 ITERATIONS_PER_KEY = 100
+AUTH_TYPE = AUTH_MEM
 
 class ClientHandler(asyncio.Protocol):
     def __init__(self, signal):
@@ -29,11 +30,14 @@ class ClientHandler(asyncio.Protocol):
 		Default constructor
 		"""
 
-        # for challenge
+        # for challenge with memorized key
         self.username = None
         self.current_otp = None
         self.current_otp_index = None
         self.current_otp_root = None
+
+        # for challenge with cc
+        self.nonce = None
 
         # for new credentials
         self.clear_credentials = False
@@ -160,12 +164,17 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
 
     def request_login_message(self):
+        data = {"auth_type": AUTH_TYPE}
+        
+        if AUTH_TYPE == AUTH_MEM:
+            data["index"] = self.current_otp_index
+            data["root"] = base64.b64encode(self.current_otp_root).decode()
+        elif AUTH_TYPE == AUTH_CC:
+            data["nonce"] = self.nonce = base64.b64encode(os.urandom(64)).decode()                                  # TODO
+        
         return {
             "type": "CHALLENGE",
-            "data": {
-                "index": self.current_otp_index,
-                "root": base64.b64encode(self.current_otp_root).decode()
-            }
+            "data": data
         }
 
     def send_challenge(self, message):
@@ -175,41 +184,44 @@ class ClientHandler(asyncio.Protocol):
 
         logger.info(f"Sending challenge")
 
-        self.username = message.get('user', None)
+        if AUTH_TYPE == AUTH_MEM:
+            self.username = message.get('user', None)
 
-        try:
-            with open(f"credentials/{self.username}_index", "rb") as file:
-                self.current_otp_index = int(file.read())
-            with open(f"credentials/{self.username}_root", "rb") as file:
-                self.current_otp_root = file.read()
-            with open(f"credentials/{self.username}_otp", "rb") as file:
-                self.current_otp = file.read()
-        except OSError as e:
-            logger.error(f"Error opening the file: {e}")
-            return False
-        except Exception as error:
-            logger.error(f"Unexpected error while reading the file: {error}")
-            return False
+            try:
+                with open(f"credentials/{self.username}_index", "rb") as file:
+                    self.current_otp_index = int(file.read())
+                with open(f"credentials/{self.username}_root", "rb") as file:
+                    self.current_otp_root = file.read()
+                with open(f"credentials/{self.username}_otp", "rb") as file:
+                    self.current_otp = file.read()
+            except OSError as e:
+                logger.error(f"Error opening the file: {e}")
+                return False
+            except Exception as error:
+                logger.error(f"Unexpected error while reading the file: {error}")
+                return False
 
-        message = self.request_login_message()
-        self.state = LOGIN
+            self.state = LOGIN
+            message = self.request_login_message()
 
-        # TODO -> depois meter a puder escolher o número minimo
-        if self.current_otp_index < 100:                            # request client to update current credentials
-            logger.info("Current credentials in end of life! Requesting new ones.")
-                
-            self.new_root = os.urandom(64)
-            self.new_index = 10000
+            # TODO -> depois meter a puder escolher o número minimo
+            if self.current_otp_index < 100:                            # request client to update current credentials
+                logger.info("Current credentials in end of life! Requesting new ones.")
 
-            message = {
-                "type": "UPDATE_CREDENTIALS",
-                "data": {
-                    "index": self.new_index,
-                    "root": base64.b64encode(self.new_root).decode()
+                self.new_root = os.urandom(64)
+                self.new_index = 10000
+
+                message = {
+                    "type": "UPDATE_CREDENTIALS",
+                    "data": {
+                        "index": self.new_index,
+                        "root": base64.b64encode(self.new_root).decode()
+                    }
                 }
-            }
-                
-            self.state = UPDATE_CREDENTIALS
+
+                self.state = UPDATE_CREDENTIALS
+        elif AUTH_TYPE == AUTH_CC:
+            message = self.request_login_message()
 
         self._send(message)
         return True
@@ -599,6 +611,8 @@ class ClientHandler(asyncio.Protocol):
 def main():
     global STORAGE_DIR
     global ITERATIONS_PER_KEY
+    global AUTH_TYPE
+
     parser = argparse.ArgumentParser(
         description="Receives files from clients.")
     parser.add_argument(
@@ -633,10 +647,21 @@ def main():
         default=100,
         help="Limit to make key rotation (number iterations) (default 100)")
 
+    parser.add_argument(
+        "--authentication",
+        type=str,
+        required=False,
+        choices=[AUTH_MEM, AUTH_CC],
+        default=AUTH_MEM,
+        help="Choose authentication method to use"
+    )
+
     args = parser.parse_args()
 
     STORAGE_DIR = os.path.abspath(args.storage_dir)
     ITERATIONS_PER_KEY = args.limit
+    AUTH_TYPE = args.authentication
+
     level = logging.DEBUG if args.verbose > 0 else logging.INFO
     port = args.port
     if port <= 0 or port > 65535:
