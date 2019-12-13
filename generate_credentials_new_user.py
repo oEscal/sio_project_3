@@ -6,7 +6,7 @@ from utils import key_derivation, skey_generate_otp
 
 
 def main(args):
-    username = getpass.getuser()                # TODO -> pedir mesmo o nome (não usar o nome do utilizador do pc)
+    username = input("User name: ")
     password = getpass.getpass()
 
     password_derivation = key_derivation(args.password_hkdf_alg, args.password_hkdf_size, password.encode())

@@ -187,7 +187,7 @@ class ClientProtocol(asyncio.Protocol):
         logger.info(f"First connection with the server")
         message = {
             "type": "FIRST_CONNECTION",
-            "user": getpass.getuser()
+            "user": input("User name: ")
         }
         self._send(message)
 
