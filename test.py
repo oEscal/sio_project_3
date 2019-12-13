@@ -5,6 +5,8 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.x509.oid import ExtensionOID
+from cryptography.hazmat.primitives import hashes
 
 from cryptography.exceptions import InvalidSignature
 
@@ -96,17 +98,20 @@ if chain_completed:
             print("Um dos certificados da cadeia não foi assinado pelo seu issuer")
             break
 
+    for cert in chain:
+        # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))
+        print(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE))
 
-"""
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from cryptography.hazmat.primitives.asymmetric import padding
-issuer_public_key = load_pem_public_key(pem_issuer_public_key, default_backend())
-cert_to_check = x509.load_pem_x509_certificate(pem_data_to_check, default_backend())
+mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
+private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),(PyKCS11.CKA_LABEL,'CITIZEN AUTHENTICATION KEY')])[0]
+text = b'text to sign'
+signature = bytes(session.sign(private_key, text, mechanism))
+print(signature)
+issuer_public_key = cert_cc.public_key()
 issuer_public_key.verify(
-    cert_to_check.signature,
-    cert_to_check.tbs_certificate_bytes,
-    # Depends on the algorithm used to create the certificate
-    padding.PKCS1v15(),
-    cert_to_check.signature_hash_algorithm,
-)
-"""
+                signature,
+                text,
+                # Depends on the algorithm used to create the certificate
+                padding.PKCS1v15(),
+                hashes.SHA1(),
+            )
