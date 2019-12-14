@@ -111,11 +111,14 @@ if chain_completed:
         for i in subject.extensions:
             try:     
                 url = i.value._descriptions[0].access_location.value
-                headers = {"Host":urlparse.urlparse(url).hostname,"Content-Type": "application/ocsp-request"}
+                print(url)
+                headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data = data , headers = headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.response_status)
                 print(ocsp_resp.certificate_status)
+                if ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD:
+                    print("RIP")
             except Exception as e:
                 continue
 
