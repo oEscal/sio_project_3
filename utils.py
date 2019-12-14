@@ -1,13 +1,18 @@
 import os
 import binascii
 import random
+import PyKCS11
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.backends.interfaces import CipherBackend
-from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.primitives.asymmetric import dh, padding
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.x509.oid import ExtensionOID
+from cryptography.exceptions import InvalidSignature
 
 
 # States common betwen the server and the client
@@ -202,8 +207,60 @@ def skey_generate_otp(root, password, synthesis_algorithm, iterations=10000):
 
     return result
 
+
 def digest(init, synthesis_algorithm):
     picked_hash = getattr(hashes, synthesis_algorithm)
     digest = hashes.Hash(picked_hash(), backend=default_backend())
     digest.update(init)
     return digest.finalize()
+
+
+def new_cc_session():
+    try:
+        lib = '/usr/local/lib/libpteidpkcs11.so'
+        pkcs11 = PyKCS11.PyKCS11Lib()
+        pkcs11.load(lib)
+        slots = pkcs11.getSlotList()
+        slot = slots[0]
+
+        all_attr = list(PyKCS11.CKA.keys())
+        all_attr = [e for e in all_attr if isinstance(e, int)]
+
+        return True, pkcs11.openSession(slot)
+    except Exception as e:
+        return False, e
+
+
+def certificate_cc(session):
+    return bytes(session.findObjects([(PyKCS11.CKA_LABEL, 'CITIZEN AUTHENTICATION CERTIFICATE')])[0].to_dict()['CKA_VALUE'])
+
+
+def certificate_object(certificate):
+    return x509.load_der_x509_certificate(
+        certificate,
+        default_backend()
+    )
+
+
+def sign_nonce_cc(session, nonce):
+    mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
+    private_key = session.findObjects([
+        (PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),
+        (PyKCS11.CKA_LABEL,'CITIZEN AUTHENTICATION KEY')]
+    )[0]
+    return bytes(session.sign(private_key, nonce, mechanism))
+
+
+def verify_signature(certificate, signature, nonce):
+    try:
+        issuer_public_key = certificate.public_key()
+        issuer_public_key.verify(
+            signature,
+            nonce,
+            padding.PKCS1v15(),
+            hashes.SHA1(),
+        )
+    except InvalidSignature:
+        return False
+
+    return True

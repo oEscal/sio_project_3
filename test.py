@@ -26,6 +26,8 @@ all_attr = list(PyKCS11.CKA.keys())
 all_attr = [e for e in all_attr if isinstance(e, int)]
 
 session = pkcs11.openSession(slot)
+
+
 cert_cc = x509.load_der_x509_certificate(
     bytes(session.findObjects([(PyKCS11.CKA_LABEL, ATTR)])[0].to_dict()['CKA_VALUE']),
     default_backend()
@@ -125,9 +127,8 @@ if chain_completed:
     for cert in chain:
         # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))
         print(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE))
-        
-    
-		
+        print(cert.extensions)
+
 mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
 private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),(PyKCS11.CKA_LABEL,'CITIZEN AUTHENTICATION KEY')])[0]
 text = b'text to sign'
