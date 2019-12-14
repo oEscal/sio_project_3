@@ -319,13 +319,12 @@ class ClientHandler(asyncio.Protocol):
                 }
                 status = False
             else:
-                valid_chain = validate_certificate_chain(chain)
+                valid_chain, error_messages = validate_certificate_chain(chain)
                 if not valid_chain:
-                    error_message = "One of the chain certificates was not signed by it's issuer"
-                    logger.error(error_message)
+                    logger.error(error_messages)
                     message = {
                         "type": "ERROR",
-                        "message": error_message
+                        "message": error_messages
                     }
                     status = False
                 else:
