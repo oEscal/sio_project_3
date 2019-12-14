@@ -12,16 +12,20 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, digest
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, STATE_AUTH, digest, \
+    verify_signature, certificate_object, construct_certificate_chain, load_certificates, \
+    validate_certificate_chain
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.x509 import ObjectIdentifier
 
 logger = logging.getLogger("root")
 
 # GLOBAL
 STORAGE_DIR = "files"
 ITERATIONS_PER_KEY = 100
+AUTH_TYPE = AUTH_MEM
 
 class ClientHandler(asyncio.Protocol):
     def __init__(self, signal):
@@ -29,11 +33,14 @@ class ClientHandler(asyncio.Protocol):
 		Default constructor
 		"""
 
-        # for challenge
-        self.username = None
+        # for challenge with memorized key
+        self.user_id = None
         self.current_otp = None
         self.current_otp_index = None
         self.current_otp_root = None
+
+        # for challenge with cc
+        self.nonce = None
 
         # for new credentials
         self.clear_credentials = False
@@ -124,6 +131,8 @@ class ClientHandler(asyncio.Protocol):
 
         mtype = message.get("type", "").upper()
         if mtype == "FIRST_CONNECTION":
+            ret = self.send_auth_type(message)
+        elif mtype == "AUTH_TYPE":
             ret = self.send_challenge(message)
         elif mtype == "UPDATE_CREDENTIALS":
             ret = self.update_credentials(message)
@@ -160,56 +169,81 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
 
     def request_login_message(self):
+        data = {}
+        
+        if AUTH_TYPE == AUTH_MEM:
+            data["index"] = self.current_otp_index
+            data["root"] = base64.b64encode(self.current_otp_root).decode()
+        elif AUTH_TYPE == AUTH_CC:
+            self.nonce = os.urandom(64)
+            data["nonce"] = base64.b64encode(self.nonce).decode()                                  # TODO
+        
         return {
             "type": "CHALLENGE",
-            "data": {
-                "index": self.current_otp_index,
-                "root": base64.b64encode(self.current_otp_root).decode()
-            }
+            "data": data
         }
 
-    def send_challenge(self, message):
+    def send_auth_type(self, message):
         if self.state != STATE_CONNECT:
+            logger.warning("Invalid state. Discarding")
+            return False
+
+        logger.info(f"Sending authentication type")
+
+        self.state = STATE_AUTH
+        message = {
+            "type": "AUTH_TYPE",
+            "auth_type": AUTH_TYPE
+        }
+
+        self._send(message)
+        return True
+
+    def send_challenge(self, message):
+        if self.state != STATE_AUTH:
             logger.warning("Invalid state. Discarding")
             return False
 
         logger.info(f"Sending challenge")
 
-        self.username = message.get('user', None)
-
-        try:
-            with open(f"credentials/{self.username}_index", "rb") as file:
-                self.current_otp_index = int(file.read())
-            with open(f"credentials/{self.username}_root", "rb") as file:
-                self.current_otp_root = file.read()
-            with open(f"credentials/{self.username}_otp", "rb") as file:
-                self.current_otp = file.read()
-        except OSError as e:
-            logger.error(f"Error opening the file: {e}")
-            return False
-        except Exception as error:
-            logger.error(f"Unexpected error while reading the file: {error}")
-            return False
-
-        message = self.request_login_message()
         self.state = LOGIN
+        if AUTH_TYPE == AUTH_MEM:
+            self.user_id = message.get('user', None)
 
-        # TODO -> depois meter a puder escolher o número minimo
-        if self.current_otp_index < 100:                            # request client to update current credentials
-            logger.info("Current credentials in end of life! Requesting new ones.")
-                
-            self.new_root = os.urandom(64)
-            self.new_index = 10000
+            try:
+                with open(f"credentials/{self.user_id}_index", "rb") as file:
+                    self.current_otp_index = int(file.read())
+                with open(f"credentials/{self.user_id}_root", "rb") as file:
+                    self.current_otp_root = file.read()
+                with open(f"credentials/{self.user_id}_otp", "rb") as file:
+                    self.current_otp = file.read()
+            except OSError as e:
+                logger.error(f"Error opening the file: {e}")
+                return False
+            except Exception as error:
+                logger.error(f"Unexpected error while reading the file: {error}")
+                return False
 
-            message = {
-                "type": "UPDATE_CREDENTIALS",
-                "data": {
-                    "index": self.new_index,
-                    "root": base64.b64encode(self.new_root).decode()
+            message = self.request_login_message()
+
+            # TODO -> depois meter a puder escolher o número minimo
+            if self.current_otp_index < 100:                            # request client to update current credentials
+                logger.info("Current credentials in end of life! Requesting new ones.")
+
+                self.new_root = os.urandom(64)
+                self.new_index = 10000
+
+                message = {
+                    "type": "UPDATE_CREDENTIALS",
+                    "data": {
+                        "index": self.new_index,
+                        "root": base64.b64encode(self.new_root).decode()
+                    }
                 }
-            }
-                
-            self.state = UPDATE_CREDENTIALS
+
+                self.state = UPDATE_CREDENTIALS
+        elif AUTH_TYPE == AUTH_CC:
+            message = self.request_login_message()
 
         self._send(message)
         return True
@@ -237,43 +271,109 @@ class ClientHandler(asyncio.Protocol):
 
         logger.info(f"Loging in")
 
-        new_otp = base64.b64decode(message.get("otp", None).encode())
-        current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
+        data = message.get("data", None)
 
+        self.state = LOGIN_FINISH
         status = False                                                  # status = False -> if login wasn't a success
-        message = {
-            "type": "ERROR",
-            "message": "Invalid credentials for logging in"
-        }
-
-        if self.current_otp == current_otp_client:                      # success login
-            status = True
-
-            if self.clear_credentials:
-                logger.info("Clearing old credentials and saving new ones.")
-
-                self.current_otp_index = self.new_index + 1
-                self.current_otp_root = self.new_root 
-                new_otp = self.new_otp
-
-            with open(f"credentials/{self.username}_index", "wb") as file:
-                file.write(f"{self.current_otp_index - 1}".encode())
-            with open(f"credentials/{self.username}_root", "wb") as file:
-                file.write(self.current_otp_root)
-            with open(f"credentials/{self.username}_otp", "wb") as file:
-                file.write(new_otp)
+        if AUTH_TYPE == AUTH_MEM:
+            new_otp = base64.b64decode(data["otp"].encode())
+            current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
 
             message = {
-                "type": "OK"
+                "type": "ERROR",
+                "message": "Invalid credentials for logging in"
             }
-            self.state = LOGIN_FINISH
-                
-            logger.info("User logged in with success! Credentials updated.")
-        else:
-            logger.info("User not logged in! Wrong credentials where given.")
-        
+
+            if self.current_otp == current_otp_client:                      # success login
+                status = True
+
+                if self.clear_credentials:
+                    logger.info("Clearing old credentials and saving new ones.")
+
+                    self.current_otp_index = self.new_index + 1
+                    self.current_otp_root = self.new_root 
+                    new_otp = self.new_otp
+
+                with open(f"credentials/{self.user_id}_index", "wb") as file:
+                    file.write(f"{self.current_otp_index - 1}".encode())
+                with open(f"credentials/{self.user_id}_root", "wb") as file:
+                    file.write(self.current_otp_root)
+                with open(f"credentials/{self.user_id}_otp", "wb") as file:
+                    file.write(new_otp)
+
+                logger.info("User logged in with success! Credentials updated.")
+            else:
+                logger.info("User not logged in! Wrong credentials where given.")
+        elif AUTH_TYPE == AUTH_CC:
+            cc_certificate = certificate_object(base64.b64decode(data["certificate"].encode()))
+            signed_nonce = base64.b64decode(data["sign_nonce"].encode())
+
+            certificates = load_certificates("cc_certificates/")                                    # TODO
+
+            chain = []
+            chain_completed = construct_certificate_chain(chain, cc_certificate, certificates)
+
+            if not chain_completed:
+                error_message = "Couldn't complete the certificate chain"
+                logger.warning(error_message)
+                message = {
+                    "type": "ERROR",
+                    "message": error_message
+                }
+                status = False
+            else:
+                valid_chain, error_messages = validate_certificate_chain(chain)
+                if not valid_chain:
+                    logger.error(error_messages)
+                    message = {
+                        "type": "ERROR",
+                        "message": error_messages
+                    }
+                    status = False
+                else:
+                    status = verify_signature(cc_certificate, signed_nonce, self.nonce)
+
+            if status:
+                oid = ObjectIdentifier("2.5.4.5")                                           # oid of citizens card's CI (civil id)
+                self.user_id = cc_certificate.subject.get_attributes_for_oid(oid)[0].value
+
+                logger.info("User logged in with success")
+                message = {
+                    "type": "OK"
+                }
+            
+        # Access verification
+        if status:
+            access_result = self.check_access()
+            if not access_result[0]:
+                logger.warning(access_result[1])
+
+                status = False
+                message = {
+                    "type": "ERROR",
+                    "message": access_result[1]
+                }
+            else:
+                message = {
+                    "type": "OK"
+                }
+                logger.info(access_result[1])
+
+
         self._send(message)
         return status
+
+    def check_access(self):
+        logger.info("Verifying access")
+
+        with open(ACCESS_FILE, 'r') as file:
+            data = json.load(file)
+
+        if self.user_id not in data:
+            return False, "User not in access list"
+        elif not data[self.user_id]["send"]:
+            return False, "User has not access to transfer files"
+        return True, "User has access to transfer files"
 
     def process_client_algorithm_pick(self, message: str) -> bool:
         """
@@ -575,6 +675,8 @@ class ClientHandler(asyncio.Protocol):
 def main():
     global STORAGE_DIR
     global ITERATIONS_PER_KEY
+    global AUTH_TYPE
+
     parser = argparse.ArgumentParser(
         description="Receives files from clients.")
     parser.add_argument(
@@ -609,10 +711,21 @@ def main():
         default=100,
         help="Limit to make key rotation (number iterations) (default 100)")
 
+    parser.add_argument(
+        "--authentication",
+        type=str,
+        required=False,
+        choices=[AUTH_MEM, AUTH_CC],
+        default=AUTH_MEM,
+        help="Choose authentication method to use"
+    )
+
     args = parser.parse_args()
 
     STORAGE_DIR = os.path.abspath(args.storage_dir)
     ITERATIONS_PER_KEY = args.limit
+    AUTH_TYPE = args.authentication
+
     level = logging.DEBUG if args.verbose > 0 else logging.INFO
     port = args.port
     if port <= 0 or port > 65535:
