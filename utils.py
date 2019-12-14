@@ -2,6 +2,7 @@ import os
 import binascii
 import random
 import PyKCS11
+from datetime import datetime
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -302,43 +303,48 @@ def construct_certificate_chain(chain, cert, certificates):
 
 def validate_certificate_chain(chain):
     # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
+    
+    error_messages = []
     try:
-        return (validate_purpose_certificate_chain(chain) and validate_cm_certificate_chain(chain)
-                and validate_validity_certificate_chain(chain) and validate_revocation_certificate_chain(chain) 
-                and validate_signatures_certificate_chain(chain))
+        return (validate_purpose_certificate_chain(chain,error_messages) and validate_cm_certificate_chain(chain, error_messages)
+                and validate_validity_certificate_chain(chain, error_messages) and validate_revocation_certificate_chain(chain,error_messages) 
+                and validate_signatures_certificate_chain(chain, error_messages)), error_messages
     except Exception as e:
-        return False
+        error_messages.append("Some error occurred while verifying certificate chain")
+        return False, error_messages
 
-    # error_message = "One of the chain certificates was not signed by it's issuer"
 
-
-def validate_purpose_certificate_chain(chain):
-    result = certificate_hasnt_purposes(chain[0], ["key_agreement", "key_cert_sign", "crl_sign"])
-
+def validate_purpose_certificate_chain(chain, error_messages):
+    result = certificate_hasnt_purposes(chain[0], ["key_cert_sign", "crl_sign"])
 
     for i in range(1, len(chain)):
         if not result:
+            error_messages.append("The purpose of at least one chain certificate is wrong")
             return result
-        result &= certificate_hasnt_purposes(chain[0], ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment"])
+        result &= certificate_hasnt_purposes(chain[i], ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment"])
 
+    if not result:
+        error_messages.append("The purpose of at least one chain certificate is wrong")
     return result
 
 
-def validate_cm_certificate_chain(chain):
+def validate_cm_certificate_chain(chain, error_messages):
     return True
 
 
-def validate_validity_certificate_chain(chain):
+def validate_validity_certificate_chain(chain, error_messages):
     for cert in chain:
         dates = (cert.not_valid_before.timestamp(), cert.not_valid_after.timestamp())
 
         if datetime.now().timestamp() < dates[0] or datetime.now().timestamp() > dates[1]:
+            error_messages.append("One of the chain certificates isn't valid")
             return False
 
     return True
 
 
-def validate_revocation_certificate_chain(chain):
+def validate_revocation_certificate_chain(chain, error_messages):
+    
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
@@ -356,12 +362,13 @@ def validate_revocation_certificate_chain(chain):
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
                 if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
+                    error_messages.append("One of the certificates is revoked")
                     return False
         
     return True
 
 
-def validate_signatures_certificate_chain(chain):
+def validate_signatures_certificate_chain(chain, error_messages):
     for i in range(1, len(chain)):
         try:
             subject = chain[i - 1]
@@ -374,6 +381,7 @@ def validate_signatures_certificate_chain(chain):
                 subject.signature_hash_algorithm,
             )
         except InvalidSignature:
+            error_messages.append("One of the certificates isn't signed by its issuer")
             return False
 
     return True
@@ -382,4 +390,6 @@ def validate_signatures_certificate_chain(chain):
 def certificate_hasnt_purposes(certificate, purposes):
     result = True
     for purpose in purposes:
-        result &= not getattr(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
+        result &= not getattr(certificate.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
+
+    return result
