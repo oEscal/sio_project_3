@@ -16,6 +16,7 @@ from cryptography.x509.oid import ExtensionOID
 from cryptography.exceptions import InvalidSignature
 from cryptography.x509 import ocsp
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509.extensions import CRLDistributionPoints,AuthorityInformationAccess
 import requests
 
 # States common betwen the server and the client
@@ -351,6 +352,27 @@ def validate_validity_certificate_chain(chain, error_messages):
     return True
 
 
+def is_certificate_revoked(serial_number,crl_url):
+    r = requests.post(crl_url)
+    try:
+        crl = x509.load_der_x509_crl(r.content, default_backend())
+    except ValueError as e:
+        crl = x509.load_pem_x509_crl(r.content, default_backend())
+    return crl.get_revoked_certificate_by_serial_number(serial_number) is not None
+
+
+def validate_revocation_certificate_chain_crl(chain,error_messages):
+    for i in range(1, len(chain)):
+        subject = chain[i - 1]
+        issuer = chain[i]
+        for e in subject.extensions:
+            if isinstance(e.value,CRLDistributionPoints):
+                crl_url = e.value._distribution_points[0].full_name[0].value
+                if is_certificate_revoked(subject.serial_number,crl_url):
+                    error_messages.append("One of the certificates is revoked")
+                    return False
+    return True
+
 def validate_revocation_certificate_chain(chain, error_messages):
     return True                                                             # TODO -> PARA MUDAR
     for i in range(1, len(chain)):
@@ -361,19 +383,29 @@ def validate_revocation_certificate_chain(chain, error_messages):
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
 
-        for i in subject.extensions:
-            if hasattr(i.value, "_descriptions"):
+        for e in subject.extensions:
+            if isinstance(e.value,AuthorityInformationAccess):
                 had_ocsp = True
-                url = i.value._descriptions[0].access_location.value
+                url = e.value._descriptions[0].access_location.value
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data=data, headers=headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
-                if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
-                    error_messages.append("One of the certificates is revoked")
+                print(ocsp_resp.certificate_status)
+
+                if ocsp_resp.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL:
+                    if ocsp_resp.certificate_status == ocsp.OCSPCertStatus.UNKNOWN:
+                        status = validate_revocation_certificate_chain_crl([subject,issuer],error_messages)
+                        if not status:
+                            return False
+                    elif ocsp_resp.certificate_status == ocsp.OCSPCertStatus.REVOKED:
+                        error_messages.append("One of the certificates is revoked")
+                        return False
+                else:
                     return False
-        
     return True
+
+
 
 
 def validate_signatures_certificate_chain(chain, error_messages):

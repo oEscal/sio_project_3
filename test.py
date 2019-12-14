@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.x509 import ocsp
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509.extensions import CRLDistributionPoints,AuthorityInformationAccess
 import requests
 import urllib.parse as urlparse
 
@@ -78,7 +79,23 @@ def build_issuers(chain, cert):
     
     return False
     
+def is_certificate_revoked(serial_number,crl_url):
+    print(crl_url)
+    r = requests.get(crl_url)
+    crl = x509.load_der_x509_crl(r.content, default_backend())
+    return crl.get_revoked_certificate_by_serial_number(serial_number) is not None
 
+
+def validate_revocation_certificate_chain_crl(chain):
+    for i in range(1, len(chain)):
+        subject = chain[i - 1]
+        issuer = chain[i]
+        for e in subject.extensions:
+            if isinstance(e.value,CRLDistributionPoints):
+                crl_url = e.value._distribution_points[0].full_name[0].value
+                if is_certificate_revoked(subject.serial_number,crl_url):
+                    return False
+    return True
 
 chain = []
 chain_completed = build_issuers(chain, cert_cc)
@@ -98,8 +115,9 @@ if chain_completed:
         except InvalidSignature:
             print("Um dos certificados da cadeia não foi assinado pelo seu issuer")
             break
-    
-    
+
+
+
     
     for i in range(1, len(chain)):
         subject = chain[i - 1]
@@ -108,22 +126,60 @@ if chain_completed:
         builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
-        
-        had_ocsp = False
-        for i in subject.extensions:
-            if hasattr(i.value, "_descriptions"):
-                url = i.value._descriptions[0].access_location.value
-                headers = {"Content-Type": "application/ocsp-request"}
-                r = requests.post(url, data = data , headers = headers )
-                ocsp_resp = ocsp.load_der_ocsp_response(r.content)
-                print(ocsp_resp.response_status)
-                
-                if ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD:
-                    print("RIP")
-                
+
+        for e in subject.extensions:
+            if isinstance(e.value,AuthorityInformationAccess):
                 had_ocsp = True
-        if not had_ocsp:
-            print("CRL")
+                url = e.value._descriptions[0].access_location.value
+                headers = {"Content-Type": "application/ocsp-request"}
+                r = requests.post(url, data=data, headers=headers )
+                ocsp_resp = ocsp.load_der_ocsp_response(r.content)
+                print(ocsp_resp.certificate_status)
+                if ocsp_resp.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL:
+                    if ocsp_resp.certificate_status == ocsp.OCSPCertStatus.UNKNOWN:
+                        status = validate_revocation_certificate_chain_crl([subject,issuer])
+                        print("Crl " , status)
+                        if not status:
+                            #error_messages.append("One of the certificates is revoked")
+                            #return False
+                            print("RIP CRL")
+                    elif ocsp_resp.certificate_status == ocsp.OCSPCertStatus.REVOKED:
+                        print("RIP OCSP")
+                        #error_messages.append("One of the certificates is revoked")
+                        #return False
+
+    
+    #or i in range(1, len(chain)):
+    #   subject = chain[i - 1]
+    #   issuer = chain[i]
+    #   builder = ocsp.OCSPRequestBuilder()
+    #   builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
+    #   req = builder.build()
+    #   data = req.public_bytes(serialization.Encoding.DER)
+    #   
+    #   had_ocsp = False
+    #   for j in subject.extensions:
+    #       #if isinstance(j.value,CRLDistributionPoints):
+    #       #    crl_url = j.value._distribution_points[0].full_name[0].value
+    #       #    r = requests.post(crl_url)
+    #       #    crl = x509.load_der_x509_crl(r.content, default_backend())
+    #       #    for w in crl:
+    #       #        print(w.serial_number)
+
+
+    #       if isinstance(j.value,AuthorityInformationAccess):
+    #           url = j.value._descriptions[0].access_location.value
+    #           headers = {"Content-Type": "application/ocsp-request"}
+    #           r = requests.post(url, data = data , headers = headers )
+    #           ocsp_resp = ocsp.load_der_ocsp_response(r.content)
+    #           print(ocsp_resp.response_status)
+    #           print(ocsp_resp.certificate_status)
+    #           if ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD:
+    #               print("RIP")
+    #   print()
+                #had_ocsp = True
+        #if not had_ocsp:
+        #    print("CRL")
 
     for cert in chain:
         # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))
