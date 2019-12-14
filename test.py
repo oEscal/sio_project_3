@@ -108,8 +108,10 @@ if chain_completed:
         builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
+        
+        had_ocsp = False
         for i in subject.extensions:
-            try:     
+            if hasattr(i.value, "_descriptions"):
                 url = i.value._descriptions[0].access_location.value
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data = data , headers = headers )
@@ -118,9 +120,10 @@ if chain_completed:
                 
                 if ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD:
                     print("RIP")
-            except Exception as e:
-                continue
-
+                
+                had_ocsp = True
+        if not had_ocsp:
+            print("CRL")
 
     for cert in chain:
         # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))

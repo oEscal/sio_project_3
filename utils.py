@@ -344,7 +344,7 @@ def validate_validity_certificate_chain(chain, error_messages):
 
 
 def validate_revocation_certificate_chain(chain, error_messages):
-    return True             # TODO -> remover quando estiver a dar bem
+    
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
@@ -352,8 +352,10 @@ def validate_revocation_certificate_chain(chain, error_messages):
         builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
+
         for i in subject.extensions:
-            try:     
+            if hasattr(i.value, "_descriptions"):
+                had_ocsp = True
                 url = i.value._descriptions[0].access_location.value
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data = data , headers = headers )
@@ -362,8 +364,7 @@ def validate_revocation_certificate_chain(chain, error_messages):
                 if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
                     error_messages.append("One of the certificates is revoked")
                     return False
-            except Exception as e:
-                continue
+        
     return True
 
 
