@@ -10,8 +10,10 @@ from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
     STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, LOGIN, LOGIN_FINISH, \
-    AUTH_CC, AUTH_MEM, STATE_AUTH, skey_generate_otp, new_cc_session, certificate_cc, \
-    sign_nonce_cc
+    AUTH_CC, AUTH_MEM, STATE_AUTH, SERVER_AUTH, skey_generate_otp, new_cc_session, \
+    certificate_cc, sign_nonce_cc, verify_signature, certificate_object_from_pem, \
+    load_certificates, construct_certificate_chain, validate_certificate_chain, \
+    verify_signature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -30,6 +32,9 @@ class ClientProtocol(asyncio.Protocol):
         :param file_name: Name of the file to send
         :param loop: Asyncio Loop to use
         """
+
+        # server authentication
+        self.nonce = None
 
         self.auth_type = None
         self.file_name = file_name
@@ -125,10 +130,13 @@ class ClientProtocol(asyncio.Protocol):
         print(f"{message}\n\n")
 
         mtype = message.get("type", None)
-        if mtype == "AUTH_TYPE":
+        if mtype == "SERVER_AUTH":
+            self.verify_server(message)
+            return
+        elif mtype == "AUTH_TYPE":
             self.accept_auth_type(message)
             return
-        if mtype == "CHALLENGE":
+        elif mtype == "CHALLENGE":
             self.login(message)
             return
         elif mtype == "UPDATE_CREDENTIALS":
@@ -171,7 +179,6 @@ class ClientProtocol(asyncio.Protocol):
             logger.warning("Invalid state")
 
         elif mtype == "DH_PUBLIC_KEY":
-           
             if self.state == STATE_DH_EXCHANGE_KEYS:
                 self.get_server_DH_key(message)
                 return
@@ -192,11 +199,63 @@ class ClientProtocol(asyncio.Protocol):
             self.transport.close()
             self.loop.stop()
 
+        self.nonce = os.urandom(64)
+
         logger.info(f"First connection with the server")
         message = {
-            "type": "FIRST_CONNECTION",
+            "type": "SERVER_AUTH",
+            "nonce": base64.b64encode(self.nonce).decode()
         }
         self._send(message)
+
+        self.state = SERVER_AUTH
+
+    def verify_server(self, message):
+        if self.state != SERVER_AUTH:
+            logger.debug("Invalid state")
+            self.transport.close()
+            self.loop.stop()
+
+        logger.info("Verifying server")
+
+        data = message.get("data", None)
+        server_certificate = certificate_object_from_pem(
+            base64.b64decode(data['certificate'].encode()))
+        signed_nonce = base64.b64decode(data['sign_nonce'].encode())
+
+        certificates = load_certificates("client_certs/")
+
+        chain = []
+        chain_completed = construct_certificate_chain(chain, server_certificate, certificates)
+
+        if not chain_completed:
+            error_message = "Couldn't complete the certificate chain"
+            logger.warning(error_message)
+            message = {
+                "type": "ERROR",
+                "message": error_message
+            }
+            self._send(message)
+            self.transport.close()
+            self.loop.stop()
+        else:
+            valid_chain, error_messages = validate_certificate_chain(chain)
+
+            if not valid_chain:
+                logger.error(error_messages)
+                message = {
+                    "type": "ERROR",
+                    "message": error_messages
+                }
+                self._send(message)
+                self.transport.close()
+                self.loop.stop()
+            else:
+                if verify_signature(server_certificate, signed_nonce, self.nonce):
+                    message = {
+                        "type": "SUCCESS_AUTH"
+                    }
+                    self._send(message)
 
         self.state = STATE_AUTH
 
@@ -206,7 +265,6 @@ class ClientProtocol(asyncio.Protocol):
             self.transport.close()
             self.loop.stop()
 
-        
         self.auth_type = message.get("auth_type", None)
 
         message = {
@@ -274,8 +332,8 @@ class ClientProtocol(asyncio.Protocol):
             data_to_send["sign_nonce"] = base64.b64encode(sign_nonce_cc(self.session, nonce)).decode()
 
         message = {
-                "type": "LOGIN",
-                "data": data_to_send
+            "type": "LOGIN",
+            "data": data_to_send
         }  
     
         self._send(message)

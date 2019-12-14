@@ -28,6 +28,7 @@ LOGIN = 7
 LOGIN_FINISH = 9
 ACCESS_CHECKED = 10
 STATE_AUTH = 11
+SERVER_AUTH = 12
 
 # Client's states
 STATE_KEY = 4
@@ -270,10 +271,16 @@ def verify_signature(certificate, signature, nonce):
     return True
 
 
-def load_cert_from_disk(file_name):
-   with open(file_name, 'rb') as file:
-      pem_data = file.read()
-   return x509.load_pem_x509_certificate(pem_data, default_backend())
+def certificate_object_from_pem(pem_data):
+    return x509.load_pem_x509_certificate(pem_data, default_backend())
+
+def load_cert_from_disk(file_name, return_object=True):
+    with open(file_name, 'rb') as file:
+        pem_data = file.read()
+
+    if return_object:
+        return certificate_object_from_pem(pem_data)
+    return pem_data
 
 
 def load_certificates(path):
@@ -394,3 +401,14 @@ def certificate_hasnt_purposes(certificate, purposes):
         result &= not getattr(certificate.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
 
     return result
+
+def load_private_key_file(path):
+    with open(path, "rb") as key_file:
+        return serialization.load_pem_private_key(
+            key_file.read(),
+            password=None,
+            backend=default_backend()
+        )
+
+def sign_with_pk(pk, nonce):
+    return pk.sign(nonce, padding.PKCS1v15(), hashes.SHA1())
