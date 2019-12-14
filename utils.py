@@ -2,6 +2,7 @@ import os
 import binascii
 import random
 import PyKCS11
+from datetime import datetime
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -307,17 +308,16 @@ def validate_certificate_chain(chain):
     except Exception as e:
         return False
 
-    # error_message = "One of the chain certificates was not signed by it's issuer"
+    error_message = "One of the chain certificates was not signed by it's issuer"
 
 
 def validate_purpose_certificate_chain(chain):
-    result = certificate_hasnt_purposes(chain[0], ["key_agreement", "key_cert_sign", "crl_sign"])
-
+    result = certificate_hasnt_purposes(chain[0], ["key_cert_sign", "crl_sign"])
 
     for i in range(1, len(chain)):
         if not result:
             return result
-        result &= certificate_hasnt_purposes(chain[0], ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment"])
+        result &= certificate_hasnt_purposes(chain[i], ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment"])
 
     return result
 
@@ -361,4 +361,6 @@ def validate_signatures_certificate_chain(chain):
 def certificate_hasnt_purposes(certificate, purposes):
     result = True
     for purpose in purposes:
-        result &= not getattr(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
+        result &= not getattr(certificate.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
+
+    return result
