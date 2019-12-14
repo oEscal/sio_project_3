@@ -346,8 +346,10 @@ def validate_revocation_certificate_chain(chain):
         builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
+
         for i in subject.extensions:
-            try:     
+            if hasattr(i.value, "_descriptions"):
+                had_ocsp = True
                 url = i.value._descriptions[0].access_location.value
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data = data , headers = headers )
@@ -355,9 +357,7 @@ def validate_revocation_certificate_chain(chain):
                 print(ocsp_resp.certificate_status)
                 if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
                     return False
-                
-            except Exception as e:
-                continue
+        
     return True
 
 
