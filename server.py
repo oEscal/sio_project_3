@@ -155,6 +155,7 @@ class ClientHandler(asyncio.Protocol):
         elif mtype == "ERROR":
             logger.warning("Got error from client: {}".format(
                 message.get("message", None)))
+            ret = False
         else:
             logger.warning("Invalid message type: {}".format(message["type"]))
             ret = False

@@ -352,8 +352,8 @@ def validate_validity_certificate_chain(chain, error_messages):
     return True
 
 
-def is_certificate_revoked(serial_number,crl_url):
-    r = requests.post(crl_url)
+def is_certificate_revoked(serial_number, crl_url):
+    r = requests.get(crl_url)
     try:
         crl = x509.load_der_x509_crl(r.content, default_backend())
     except ValueError as e:
@@ -361,20 +361,22 @@ def is_certificate_revoked(serial_number,crl_url):
     return crl.get_revoked_certificate_by_serial_number(serial_number) is not None
 
 
-def validate_revocation_certificate_chain_crl(chain,error_messages):
+# mWLLjqFfm2ArJ8drgABM6cu84ABc
+def validate_revocation_certificate_chain_crl(chain, error_messages):
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
-        for e in subject.extensions:
-            if isinstance(e.value,CRLDistributionPoints):
+        for e in issuer.extensions:
+            if isinstance(e.value, CRLDistributionPoints):
                 crl_url = e.value._distribution_points[0].full_name[0].value
                 if is_certificate_revoked(subject.serial_number,crl_url):
                     error_messages.append("One of the certificates is revoked")
                     return False
     return True
 
+
 def validate_revocation_certificate_chain(chain, error_messages):
-    return True                                                             # TODO -> PARA MUDAR
+    # return True                                                             # TODO -> PARA MUDAR
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
@@ -391,7 +393,6 @@ def validate_revocation_certificate_chain(chain, error_messages):
                 r = requests.post(url, data=data, headers=headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
-                print(ocsp_resp.certificate_status)
 
                 if ocsp_resp.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL:
                     if ocsp_resp.certificate_status == ocsp.OCSPCertStatus.UNKNOWN:
@@ -404,8 +405,6 @@ def validate_revocation_certificate_chain(chain, error_messages):
                 else:
                     return False
     return True
-
-
 
 
 def validate_signatures_certificate_chain(chain, error_messages):
