@@ -10,7 +10,7 @@ from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
     STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, LOGIN, LOGIN_FINISH, \
-    skey_generate_otp
+    AUTH_CC, AUTH_MEM, skey_generate_otp, new_cc_session, certificate_cc, sign_nonce_cc
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -34,6 +34,9 @@ class ClientProtocol(asyncio.Protocol):
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
         self.buffer = ""  # Buffer to receive data chunks
+
+        # cc authentication
+        self.session = None
 
         self.current_algorithm = None
         self.dh_private_key = None
@@ -223,18 +226,37 @@ class ClientProtocol(asyncio.Protocol):
         logger.info(f"Loging in")
 
         data = message.get("data", None)
-        index = data['index']
-        root = base64.b64decode(data['root'].encode())
+        auth_type = data["auth_type"]
 
-        password = getpass.getpass()
-        otp = self.generate_new_otp(password, root, index - 1)
+        data_to_send = {}
+        if auth_type == AUTH_MEM:
+            index = data['index']
+            root = base64.b64decode(data['root'].encode())
+
+            password = getpass.getpass()
+            otp = self.generate_new_otp(password, root, index - 1)
+            data_to_send["otp"] = base64.b64encode(otp).decode()
+        elif auth_type == AUTH_CC:
+            session_success, session_data = new_cc_session()
+
+            if not session_success:
+                logger.error(f"Error establishing a new citizen card session: {session_data}")
+                self.transport.close()
+                self.loop.stop()
+                return
+            
+            self.session = session_data
+
+            nonce = base64.b64decode(data["nonce"].encode())
+            data_to_send["certificate"] = base64.b64encode(certificate_cc(self.session)).decode()
+            data_to_send["sign_nonce"] = base64.b64encode(sign_nonce_cc(self.session, nonce)).decode()
 
         message = {
-            "type": "LOGIN",
-            "otp": base64.b64encode(otp).decode(),
-        }
+                "type": "LOGIN",
+                "data": data_to_send
+        }  
+    
         self._send(message)
-
         self.state = LOGIN_FINISH
 
     def generate_new_otp(self, password, root, index):

@@ -12,7 +12,8 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, digest
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, digest, \
+    verify_signature, certificate_object
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -170,7 +171,8 @@ class ClientHandler(asyncio.Protocol):
             data["index"] = self.current_otp_index
             data["root"] = base64.b64encode(self.current_otp_root).decode()
         elif AUTH_TYPE == AUTH_CC:
-            data["nonce"] = self.nonce = base64.b64encode(os.urandom(64)).decode()                                  # TODO
+            self.nonce = os.urandom(64)
+            data["nonce"] = base64.b64encode(self.nonce).decode()                                  # TODO
         
         return {
             "type": "CHALLENGE",
@@ -184,6 +186,7 @@ class ClientHandler(asyncio.Protocol):
 
         logger.info(f"Sending challenge")
 
+        self.state = LOGIN
         if AUTH_TYPE == AUTH_MEM:
             self.username = message.get('user', None)
 
@@ -201,7 +204,6 @@ class ClientHandler(asyncio.Protocol):
                 logger.error(f"Unexpected error while reading the file: {error}")
                 return False
 
-            self.state = LOGIN
             message = self.request_login_message()
 
             # TODO -> depois meter a puder escolher o número minimo
@@ -249,53 +251,63 @@ class ClientHandler(asyncio.Protocol):
 
         logger.info(f"Loging in")
 
-        new_otp = base64.b64decode(message.get("otp", None).encode())
-        current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
+        data = message.get("data", None)
 
         status = False                                                  # status = False -> if login wasn't a success
-        message = {
-            "type": "ERROR",
-            "message": "Invalid credentials for logging in"
-        }
+        if AUTH_TYPE == AUTH_MEM:
+            new_otp = base64.b64decode(data["otp"].encode())
+            current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
 
-        if self.current_otp == current_otp_client:                      # success login
-            status = True
+            message = {
+                "type": "ERROR",
+                "message": "Invalid credentials for logging in"
+            }
 
-            if self.clear_credentials:
-                logger.info("Clearing old credentials and saving new ones.")
+            if self.current_otp == current_otp_client:                      # success login
+                status = True
 
-                self.current_otp_index = self.new_index + 1
-                self.current_otp_root = self.new_root 
-                new_otp = self.new_otp
+                if self.clear_credentials:
+                    logger.info("Clearing old credentials and saving new ones.")
 
-            with open(f"credentials/{self.username}_index", "wb") as file:
-                file.write(f"{self.current_otp_index - 1}".encode())
-            with open(f"credentials/{self.username}_root", "wb") as file:
-                file.write(self.current_otp_root)
-            with open(f"credentials/{self.username}_otp", "wb") as file:
-                file.write(new_otp)
+                    self.current_otp_index = self.new_index + 1
+                    self.current_otp_root = self.new_root 
+                    new_otp = self.new_otp
 
-            access_result = self.check_access()                         # very access
-            if not access_result[0]:
-                logger.warning(access_result[1])
+                with open(f"credentials/{self.username}_index", "wb") as file:
+                    file.write(f"{self.current_otp_index - 1}".encode())
+                with open(f"credentials/{self.username}_root", "wb") as file:
+                    file.write(self.current_otp_root)
+                with open(f"credentials/{self.username}_otp", "wb") as file:
+                    file.write(new_otp)
 
-                status = False
-                message = {
-                    "type": "ERROR",
-                    "message": access_result[1]
-                }
+                access_result = self.check_access()                         # very access
+                if not access_result[0]:
+                    logger.warning(access_result[1])
+
+                    status = False
+                    message = {
+                        "type": "ERROR",
+                        "message": access_result[1]
+                    }
+                else:
+                    message = {
+                        "type": "OK"
+                    }
+                    logger.info(access_result[1])
+
+                self.state = LOGIN_FINISH
+
+                logger.info("User logged in with success! Credentials updated.")
             else:
-                message = {
-                    "type": "OK"
-                }
-                logger.info(access_result[1])
+                logger.info("User not logged in! Wrong credentials where given.")
+        elif AUTH_TYPE == AUTH_CC:
+            certificate = certificate_object(base64.b64decode(data["certificate"].encode()))
+            signed_nonce = base64.b64decode(data["sign_nonce"].encode())
 
-            self.state = LOGIN_FINISH
-                
-            logger.info("User logged in with success! Credentials updated.")
-        else:
-            logger.info("User not logged in! Wrong credentials where given.")
-        
+            status = verify_signature(certificate, signed_nonce, self.nonce)
+
+            # status = True
+
         self._send(message)
         return status
 
