@@ -14,7 +14,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.x509.oid import ExtensionOID
 from cryptography.exceptions import InvalidSignature
-
+from cryptography.x509 import ocsp
+from cryptography.hazmat.primitives import serialization
+import requests
 
 # States common betwen the server and the client
 STATE_CONNECT = 0
@@ -337,6 +339,25 @@ def validate_validity_certificate_chain(chain):
 
 
 def validate_revocation_certificate_chain(chain):
+    for i in range(1, len(chain)):
+        subject = chain[i - 1]
+        issuer = chain[i]
+        builder = ocsp.OCSPRequestBuilder()
+        builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
+        req = builder.build()
+        data = req.public_bytes(serialization.Encoding.DER)
+        for i in subject.extensions:
+            try:     
+                url = i.value._descriptions[0].access_location.value
+                headers = {"Content-Type": "application/ocsp-request"}
+                r = requests.post(url, data = data , headers = headers )
+                ocsp_resp = ocsp.load_der_ocsp_response(r.content)
+                print(ocsp_resp.certificate_status)
+                if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
+                    return False
+                
+            except Exception as e:
+                continue
     return True
 
 
