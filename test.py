@@ -7,8 +7,11 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.x509.oid import ExtensionOID
 from cryptography.hazmat.primitives import hashes
-
+from cryptography.x509 import ocsp
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+import requests
+import urllib.parse as urlparse
 
 ATTR = "CITIZEN AUTHENTICATION CERTIFICATE"
 
@@ -95,6 +98,27 @@ if chain_completed:
         except InvalidSignature:
             print("Um dos certificados da cadeia não foi assinado pelo seu issuer")
             break
+    
+    
+    
+    for i in range(1, len(chain)):
+        subject = chain[i - 1]
+        issuer = chain[i]
+        builder = ocsp.OCSPRequestBuilder()
+        builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
+        req = builder.build()
+        data = req.public_bytes(serialization.Encoding.DER)
+        for i in subject.extensions:
+            try:     
+                url = i.value._descriptions[0].access_location.value
+                headers = {"Host":urlparse.urlparse(url).hostname,"Content-Type": "application/ocsp-request"}
+                r = requests.post(url, data = data , headers = headers )
+                ocsp_resp = ocsp.load_der_ocsp_response(r.content)
+                print(ocsp_resp.response_status)
+                print(ocsp_resp.certificate_status)
+            except Exception as e:
+                continue
+
 
     for cert in chain:
         # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))
