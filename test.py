@@ -48,9 +48,6 @@ def get_certificate_dates(certificate):
     return dates
 
 
-
-
-
 def read_cert(file_name):
    with open(file_name, 'rb') as file:
       pem_data = file.read()
@@ -59,7 +56,6 @@ def read_cert(file_name):
 path = "cc_certificates/"
 all_files = [f"{path}{n}" for n in os.listdir(path) if ".pem" in n]
 
-roots = {}
 certificates = {}
 for fn in all_files:
    cert = read_cert(fn)
@@ -102,14 +98,28 @@ if chain_completed:
 
     for cert in chain:
         # print(cert.extensions.get_extension_for_class(ExtensionOID.OCSP_NO_CHECK))
-        print(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE))
-        print(cert.extensions)
+        # print(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).__dict__)
 
+        """
+        o primeiro pode ter:
+         - digital_signature
+         - key_agreement
+         - key_encipherment
+         - content_commitment
+        os outros podem ter:
+         - key_cert_sign
+         - crl_sign
+        """
+
+        print(hasattr(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, "key_agreement"))
+        print(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value)
+
+"""
 mechanism = PyKCS11.Mechanism(PyKCS11.CKM_SHA1_RSA_PKCS, None)
 private_key = session.findObjects([(PyKCS11.CKA_CLASS, PyKCS11.CKO_PRIVATE_KEY),(PyKCS11.CKA_LABEL,'CITIZEN AUTHENTICATION KEY')])[0]
 text = b'text to sign'
 signature = bytes(session.sign(private_key, text, mechanism))
-print(signature)
+# print(signature)
 issuer_public_key = cert_cc.public_key()
 issuer_public_key.verify(
                 signature,
@@ -118,3 +128,4 @@ issuer_public_key.verify(
                 padding.PKCS1v15(),
                 hashes.SHA1(),
             )
+"""

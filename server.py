@@ -13,7 +13,8 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
     LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, digest, \
-    verify_signature, certificate_object
+    verify_signature, certificate_object, construct_certificate_chain, load_certificates, \
+    validate_certificate_chain
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -301,12 +302,33 @@ class ClientHandler(asyncio.Protocol):
             else:
                 logger.info("User not logged in! Wrong credentials where given.")
         elif AUTH_TYPE == AUTH_CC:
-            certificate = certificate_object(base64.b64decode(data["certificate"].encode()))
+            cc_certificate = certificate_object(base64.b64decode(data["certificate"].encode()))
             signed_nonce = base64.b64decode(data["sign_nonce"].encode())
 
-            status = verify_signature(certificate, signed_nonce, self.nonce)
+            certificates = load_certificates("cc_certificates/")                                    # TODO
 
-            # status = True
+            chain = []
+            chain_completed = construct_certificate_chain(chain, cc_certificate, certificates)
+
+            if not chain_completed:
+                error_message = "Couldn't complete the certificate chain"
+                logger.warning(error_message)
+                message = {
+                    "type": "ERROR",
+                    "message": error_message
+                }
+                status = False
+            else:
+                # error_message = "One of the chain certificates was not signed by it's issuer"
+                # logger.error(error_message)
+                # message = {
+                #     "type": "ERROR",
+                #     "message": error_message
+                # }
+
+                valid_chain = validate_certificate_chain(message)
+
+                status = verify_signature(cc_certificate, signed_nonce, self.nonce)
 
         self._send(message)
         return status

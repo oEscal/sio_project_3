@@ -264,3 +264,101 @@ def verify_signature(certificate, signature, nonce):
         return False
 
     return True
+
+
+def load_cert_from_disk(file_name):
+   with open(file_name, 'rb') as file:
+      pem_data = file.read()
+   return x509.load_pem_x509_certificate(pem_data, default_backend())
+
+
+def load_certificates(path):
+    all_files = [f"{path}{n}" for n in os.listdir(path) if ".pem" in n]
+    
+    certificates = {}
+    for fn in all_files:
+       cert = load_cert_from_disk(fn)
+       certificates[cert.subject.rfc4514_string()] = cert
+    
+    return certificates
+
+
+def construct_certificate_chain(chain, cert, certificates):
+    chain.append(cert)
+
+    issuer = cert.issuer.rfc4514_string()
+    subject = cert.subject.rfc4514_string()
+
+    if issuer == subject and subject in certificates:
+        return True
+
+    if issuer in certificates:
+        return construct_certificate_chain(chain, certificates[issuer], certificates)
+    
+    return False
+
+
+def validate_certificate_chain(chain):
+    # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
+    try:
+        return (validate_purpose_certificate_chain(chain) and validate_cm_certificate_chain(chain)
+                and validate_validity_certificate_chain(chain) and validate_revocation_certificate_chain(chain) 
+                and validate_signatures_certificate_chain(chain))
+    except Exception as e:
+        return False
+
+    # error_message = "One of the chain certificates was not signed by it's issuer"
+
+
+def validate_purpose_certificate_chain(chain):
+    result = certificate_hasnt_purposes(chain[0], ["key_agreement", "key_cert_sign", "crl_sign"])
+
+
+    for i in range(1, len(chain)):
+        if not result:
+            return result
+        result &= certificate_hasnt_purposes(chain[0], ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment"])
+
+    return result
+
+
+def validate_cm_certificate_chain(chain):
+    return True
+
+
+def validate_validity_certificate_chain(chain):
+    for cert in chain:
+        dates = (cert.not_valid_before.timestamp(), cert.not_valid_after.timestamp())
+
+        if datetime.now().timestamp() < dates[0] or datetime.now().timestamp() > dates[1]:
+            return False
+
+    return True
+
+
+def validate_revocation_certificate_chain(chain):
+    return True
+
+
+def validate_signatures_certificate_chain(chain):
+    for i in range(1, len(chain)):
+        try:
+            subject = chain[i - 1]
+            issuer = chain[i]
+            issuer_public_key = issuer.public_key()
+            issuer_public_key.verify(
+                subject.signature,
+                subject.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                subject.signature_hash_algorithm,
+            )
+        except InvalidSignature:
+            return False
+
+    return True
+
+
+def certificate_hasnt_purposes(certificate, purposes):
+    result = True
+    for purpose in purposes:
+        result &= not getattr(cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
