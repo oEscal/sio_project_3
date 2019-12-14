@@ -353,7 +353,7 @@ def validate_revocation_certificate_chain(chain):
                 r = requests.post(url, data = data , headers = headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
-                if ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD:
+                if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
                     return False
                 
             except Exception as e:
