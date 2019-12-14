@@ -17,6 +17,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.x509 import ocsp
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.extensions import CRLDistributionPoints,AuthorityInformationAccess
+from cryptography.hazmat.primitives.hashes import SHA1
 import requests
 
 # States common betwen the server and the client
@@ -381,14 +382,18 @@ def validate_revocation_certificate_chain(chain, error_messages):
         subject = chain[i - 1]
         issuer = chain[i]
         builder = ocsp.OCSPRequestBuilder()
-        builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
+        
+        builder = builder.add_certificate(subject, issuer, SHA1())
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
 
         for e in subject.extensions:
+            
             if isinstance(e.value,AuthorityInformationAccess):
-                had_ocsp = True
+                #print(e.value)
+                
                 url = e.value._descriptions[0].access_location.value
+                print(url)
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data=data, headers=headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
