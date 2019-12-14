@@ -77,9 +77,6 @@ class ClientProtocol(asyncio.Protocol):
 
         logger.debug("Connected to Server")
 
-        # send a list of all algorithms
-        # TODO -> MUDAR ISTO DE LUGAR
-        # self.send_algorithm()
         self.first_connection()
 
     def data_received(self, data: str) -> None:
