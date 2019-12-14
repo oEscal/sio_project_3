@@ -10,7 +10,8 @@ from utils import ProtoAlgorithm, DH_parameters, encryption, unpacking, \
     length_by_cipher, key_derivation, MAC, test_compatibility, key_derivation, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_KEY, \
     STATE_ALGORITHM_NEGOTIATION, STATE_DH_EXCHANGE_KEYS, LOGIN, LOGIN_FINISH, \
-    AUTH_CC, AUTH_MEM, skey_generate_otp, new_cc_session, certificate_cc, sign_nonce_cc
+    AUTH_CC, AUTH_MEM, STATE_AUTH, skey_generate_otp, new_cc_session, certificate_cc, \
+    sign_nonce_cc
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -30,6 +31,7 @@ class ClientProtocol(asyncio.Protocol):
         :param loop: Asyncio Loop to use
         """
 
+        self.auth_type = None
         self.file_name = file_name
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
@@ -123,6 +125,9 @@ class ClientProtocol(asyncio.Protocol):
         print(f"{message}\n\n")
 
         mtype = message.get("type", None)
+        if mtype == "AUTH_TYPE":
+            self.accept_auth_type(message)
+            return
         if mtype == "CHALLENGE":
             self.login(message)
             return
@@ -190,10 +195,27 @@ class ClientProtocol(asyncio.Protocol):
         logger.info(f"First connection with the server")
         message = {
             "type": "FIRST_CONNECTION",
-            "user": input("User name: ")
         }
         self._send(message)
 
+        self.state = STATE_AUTH
+
+    def accept_auth_type(self, message):
+        if self.state != STATE_AUTH:
+            logger.debug("Invalid state")
+            self.transport.close()
+            self.loop.stop()
+
+        
+        self.auth_type = message.get("auth_type", None)
+
+        message = {
+            "type": "AUTH_TYPE"
+        }
+        if self.auth_type == AUTH_MEM:
+            message["user"] = input("User name: ")
+
+        self._send(message)
         self.state = LOGIN
 
     def update_credentials(self, message):
@@ -217,6 +239,7 @@ class ClientProtocol(asyncio.Protocol):
         }
         self._send(message)
 
+
     def login(self, message):
         if self.state != LOGIN:
             logger.debug("Invalid state")
@@ -226,17 +249,16 @@ class ClientProtocol(asyncio.Protocol):
         logger.info(f"Loging in")
 
         data = message.get("data", None)
-        auth_type = data["auth_type"]
 
         data_to_send = {}
-        if auth_type == AUTH_MEM:
+        if self.auth_type == AUTH_MEM:
             index = data['index']
             root = base64.b64decode(data['root'].encode())
 
             password = getpass.getpass()
             otp = self.generate_new_otp(password, root, index - 1)
             data_to_send["otp"] = base64.b64encode(otp).decode()
-        elif auth_type == AUTH_CC:
+        elif self.auth_type == AUTH_CC:
             session_success, session_data = new_cc_session()
 
             if not session_success:

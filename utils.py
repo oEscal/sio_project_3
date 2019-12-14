@@ -27,6 +27,7 @@ STATE_DH_EXCHANGE_KEYS = 6
 LOGIN = 7
 LOGIN_FINISH = 9
 ACCESS_CHECKED = 10
+STATE_AUTH = 11
 
 # Client's states
 STATE_KEY = 4
@@ -344,7 +345,7 @@ def validate_validity_certificate_chain(chain, error_messages):
 
 
 def validate_revocation_certificate_chain(chain, error_messages):
-    
+    return True                                                             # TODO -> PARA MUDAR
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
@@ -358,7 +359,7 @@ def validate_revocation_certificate_chain(chain, error_messages):
                 had_ocsp = True
                 url = i.value._descriptions[0].access_location.value
                 headers = {"Content-Type": "application/ocsp-request"}
-                r = requests.post(url, data = data , headers = headers )
+                r = requests.post(url, data=data, headers=headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
                 if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :

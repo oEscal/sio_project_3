@@ -12,7 +12,7 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
     key_derivation, length_by_cipher, decryption, MAC, \
     STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, digest, \
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, STATE_AUTH, digest, \
     verify_signature, certificate_object, construct_certificate_chain, load_certificates, \
     validate_certificate_chain
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -34,7 +34,7 @@ class ClientHandler(asyncio.Protocol):
 		"""
 
         # for challenge with memorized key
-        self.username = None
+        self.user_id = None
         self.current_otp = None
         self.current_otp_index = None
         self.current_otp_root = None
@@ -131,6 +131,8 @@ class ClientHandler(asyncio.Protocol):
 
         mtype = message.get("type", "").upper()
         if mtype == "FIRST_CONNECTION":
+            ret = self.send_auth_type(message)
+        elif mtype == "AUTH_TYPE":
             ret = self.send_challenge(message)
         elif mtype == "UPDATE_CREDENTIALS":
             ret = self.update_credentials(message)
@@ -167,7 +169,7 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
 
     def request_login_message(self):
-        data = {"auth_type": AUTH_TYPE}
+        data = {}
         
         if AUTH_TYPE == AUTH_MEM:
             data["index"] = self.current_otp_index
@@ -181,8 +183,24 @@ class ClientHandler(asyncio.Protocol):
             "data": data
         }
 
-    def send_challenge(self, message):
+    def send_auth_type(self, message):
         if self.state != STATE_CONNECT:
+            logger.warning("Invalid state. Discarding")
+            return False
+
+        logger.info(f"Sending authentication type")
+
+        self.state = STATE_AUTH
+        message = {
+            "type": "AUTH_TYPE",
+            "auth_type": AUTH_TYPE
+        }
+
+        self._send(message)
+        return True
+
+    def send_challenge(self, message):
+        if self.state != STATE_AUTH:
             logger.warning("Invalid state. Discarding")
             return False
 
@@ -190,14 +208,14 @@ class ClientHandler(asyncio.Protocol):
 
         self.state = LOGIN
         if AUTH_TYPE == AUTH_MEM:
-            self.username = message.get('user', None)
+            self.user_id = message.get('user', None)
 
             try:
-                with open(f"credentials/{self.username}_index", "rb") as file:
+                with open(f"credentials/{self.user_id}_index", "rb") as file:
                     self.current_otp_index = int(file.read())
-                with open(f"credentials/{self.username}_root", "rb") as file:
+                with open(f"credentials/{self.user_id}_root", "rb") as file:
                     self.current_otp_root = file.read()
-                with open(f"credentials/{self.username}_otp", "rb") as file:
+                with open(f"credentials/{self.user_id}_otp", "rb") as file:
                     self.current_otp = file.read()
             except OSError as e:
                 logger.error(f"Error opening the file: {e}")
@@ -276,11 +294,11 @@ class ClientHandler(asyncio.Protocol):
                     self.current_otp_root = self.new_root 
                     new_otp = self.new_otp
 
-                with open(f"credentials/{self.username}_index", "wb") as file:
+                with open(f"credentials/{self.user_id}_index", "wb") as file:
                     file.write(f"{self.current_otp_index - 1}".encode())
-                with open(f"credentials/{self.username}_root", "wb") as file:
+                with open(f"credentials/{self.user_id}_root", "wb") as file:
                     file.write(self.current_otp_root)
-                with open(f"credentials/{self.username}_otp", "wb") as file:
+                with open(f"credentials/{self.user_id}_otp", "wb") as file:
                     file.write(new_otp)
 
                 logger.info("User logged in with success! Credentials updated.")
@@ -316,16 +334,14 @@ class ClientHandler(asyncio.Protocol):
                     status = verify_signature(cc_certificate, signed_nonce, self.nonce)
 
             if status:
-                oid = ObjectIdentifier("2.5.4.5")
-                self.username = cc_certificate.subject.get_attributes_for_oid(oid)[0].value
-                print(self.username)
+                oid = ObjectIdentifier("2.5.4.5")                                           # oid of citizens card's CI (civil id)
+                self.user_id = cc_certificate.subject.get_attributes_for_oid(oid)[0].value
 
                 logger.info("User logged in with success")
                 message = {
                     "type": "OK"
                 }
             
-
         # Access verification
         if status:
             access_result = self.check_access()
@@ -353,9 +369,9 @@ class ClientHandler(asyncio.Protocol):
         with open(ACCESS_FILE, 'r') as file:
             data = json.load(file)
 
-        if self.username not in data:
+        if self.user_id not in data:
             return False, "User not in access list"
-        elif not data[self.username]["send"]:
+        elif not data[self.user_id]["send"]:
             return False, "User has not access to transfer files"
         return True, "User has access to transfer files"
 
