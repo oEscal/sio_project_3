@@ -1,6 +1,6 @@
 import json
 import argparse
-from utils import ACCESS_CHECKED
+from utils import ACCESS_FILE
 
 
 def get_access_list():

@@ -18,6 +18,7 @@ from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.x509 import ObjectIdentifier
 
 logger = logging.getLogger("root")
 
@@ -254,6 +255,7 @@ class ClientHandler(asyncio.Protocol):
 
         data = message.get("data", None)
 
+        self.state = LOGIN_FINISH
         status = False                                                  # status = False -> if login wasn't a success
         if AUTH_TYPE == AUTH_MEM:
             new_otp = base64.b64decode(data["otp"].encode())
@@ -280,23 +282,6 @@ class ClientHandler(asyncio.Protocol):
                     file.write(self.current_otp_root)
                 with open(f"credentials/{self.username}_otp", "wb") as file:
                     file.write(new_otp)
-
-                access_result = self.check_access()                         # very access
-                if not access_result[0]:
-                    logger.warning(access_result[1])
-
-                    status = False
-                    message = {
-                        "type": "ERROR",
-                        "message": access_result[1]
-                    }
-                else:
-                    message = {
-                        "type": "OK"
-                    }
-                    logger.info(access_result[1])
-
-                self.state = LOGIN_FINISH
 
                 logger.info("User logged in with success! Credentials updated.")
             else:
@@ -329,6 +314,35 @@ class ClientHandler(asyncio.Protocol):
                     status = False
                 else:
                     status = verify_signature(cc_certificate, signed_nonce, self.nonce)
+
+            if status:
+                oid = ObjectIdentifier("2.5.4.5")
+                self.username = cc_certificate.subject.get_attributes_for_oid(oid)[0].value
+                print(self.username)
+
+                logger.info("User logged in with success")
+                message = {
+                    "type": "OK"
+                }
+            
+
+        # Access verification
+        if status:
+            access_result = self.check_access()
+            if not access_result[0]:
+                logger.warning(access_result[1])
+
+                status = False
+                message = {
+                    "type": "ERROR",
+                    "message": access_result[1]
+                }
+            else:
+                message = {
+                    "type": "OK"
+                }
+                logger.info(access_result[1])
+
 
         self._send(message)
         return status
