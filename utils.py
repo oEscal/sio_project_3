@@ -310,12 +310,12 @@ def construct_certificate_chain(chain, cert, certificates):
 
 
 def validate_certificate_chain(chain):
-    # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
-    
     error_messages = []
     try:
-        return (validate_purpose_certificate_chain(chain,error_messages) and validate_cm_certificate_chain(chain, error_messages)
-                and validate_validity_certificate_chain(chain, error_messages) and validate_revocation_certificate_chain(chain,error_messages) 
+        # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
+        return (validate_purpose_certificate_chain(chain,error_messages)
+                and validate_validity_certificate_chain(chain, error_messages) 
+                and validate_revocation_certificate_chain_crl(chain,error_messages) 
                 and validate_signatures_certificate_chain(chain, error_messages)), error_messages
     except Exception as e:
         error_messages.append("Some error occurred while verifying certificate chain")
@@ -334,10 +334,6 @@ def validate_purpose_certificate_chain(chain, error_messages):
     if not result:
         error_messages.append("The purpose of at least one chain certificate is wrong")
     return result
-
-
-def validate_cm_certificate_chain(chain, error_messages):
-    return True
 
 
 def validate_validity_certificate_chain(chain, error_messages):
@@ -375,7 +371,7 @@ def validate_revocation_certificate_chain_crl(chain, error_messages):
 
 
 def validate_revocation_certificate_chain(chain, error_messages):
-    # return True                                                             # TODO -> PARA MUDAR
+    # a failed try to use ocsp validation
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
@@ -388,8 +384,6 @@ def validate_revocation_certificate_chain(chain, error_messages):
         for e in subject.extensions:
             
             if isinstance(e.value,AuthorityInformationAccess):
-                #print(e.value)
-                
                 url = e.value._descriptions[0].access_location.value
                 print(url)
                 headers = {"Content-Type": "application/ocsp-request"}
