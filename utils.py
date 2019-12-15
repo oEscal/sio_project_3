@@ -202,8 +202,6 @@ def MAC(key, synthesis_algorithm):
 
 
 def skey_generate_otp(root, password, synthesis_algorithm, iterations=10000):
-    # TODO -> depois pode se escolher o algoritmo
-
     h = MAC(password, synthesis_algorithm)
     h.update(root)
 

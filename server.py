@@ -127,8 +127,6 @@ class ClientHandler(asyncio.Protocol):
             self.transport.close()
             return
 
-        print(f"{message}\n\n")
-
         mtype = message.get("type", "").upper()
         if mtype == "SERVER_AUTH":
             ret = self.authenticate(message)
@@ -207,7 +205,7 @@ class ClientHandler(asyncio.Protocol):
             data["root"] = base64.b64encode(self.current_otp_root).decode()
         elif AUTH_TYPE == AUTH_CC:
             self.nonce = os.urandom(64)
-            data["nonce"] = base64.b64encode(self.nonce).decode()                                  # TODO
+            data["nonce"] = base64.b64encode(self.nonce).decode()
         
         return {
             "type": "CHALLENGE",
@@ -257,7 +255,6 @@ class ClientHandler(asyncio.Protocol):
 
             message = self.request_login_message()
 
-            # TODO -> depois meter a puder escolher o número minimo
             if self.current_otp_index < 100:                            # request client to update current credentials
                 logger.info("Current credentials in end of life! Requesting new ones.")
 
@@ -308,7 +305,7 @@ class ClientHandler(asyncio.Protocol):
         status = False                                                  # status = False -> if login wasn't a success
         if AUTH_TYPE == AUTH_MEM:
             new_otp = base64.b64decode(data["otp"].encode())
-            current_otp_client = digest(new_otp, "SHA256")                  # TODO -> METER MAIS BONITO
+            current_otp_client = digest(new_otp, "SHA256")
 
             message = {
                 "type": "ERROR",
@@ -339,7 +336,7 @@ class ClientHandler(asyncio.Protocol):
             cc_certificate = certificate_object(base64.b64decode(data["certificate"].encode()))
             signed_nonce = base64.b64decode(data["sign_nonce"].encode())
 
-            certificates = load_certificates("cc_certificates/")                                    # TODO
+            certificates = load_certificates("cc_certificates/")
 
             chain = []
             chain_completed = construct_certificate_chain(chain, cc_certificate, certificates)
