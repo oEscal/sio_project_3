@@ -9,12 +9,12 @@ import csv
 import base64
 from aio_tcpserver import tcp_server
 from utils import ProtoAlgorithm, unpacking, DH_parameters, DH_parametersNumbers, \
-    key_derivation, length_by_cipher, decryption, MAC, \
-    STATE_CONNECT, STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
+    key_derivation, length_by_cipher, decryption, MAC, STATE_CONNECT, \
+    STATE_OPEN, STATE_DATA, STATE_CLOSE, STATE_ALGORITHMS, \
     STATE_ALGORITHM_ACK, STATE_DH_EXCHANGE_KEYS, LOGIN, UPDATE_CREDENTIALS, \
-    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, STATE_AUTH, digest, \
-    verify_signature, certificate_object, construct_certificate_chain, load_certificates, \
-    validate_certificate_chain
+    LOGIN_FINISH, ACCESS_CHECKED, ACCESS_FILE, AUTH_CC, AUTH_MEM, STATE_AUTH, SERVER_AUTH, \
+    digest, verify_signature, certificate_object, construct_certificate_chain, load_certificates, \
+    validate_certificate_chain, load_private_key_file, sign_with_pk, load_cert_from_disk
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -128,8 +128,10 @@ class ClientHandler(asyncio.Protocol):
             return
 
         mtype = message.get("type", "").upper()
-        if mtype == "FIRST_CONNECTION":
-            ret = self.send_auth_type(message)
+        if mtype == "SERVER_AUTH":
+            ret = self.authenticate(message)
+        elif mtype == "SUCCESS_AUTH":
+            ret = self.send_auth_type()
         elif mtype == "AUTH_TYPE":
             ret = self.send_challenge(message)
         elif mtype == "UPDATE_CREDENTIALS":
@@ -148,6 +150,10 @@ class ClientHandler(asyncio.Protocol):
             ret = self.process_DH_Public_Key(message)
         elif mtype == "PICKED_ALGORITHM":
             ret = self.process_client_algorithm_pick(message)
+        elif mtype == "ERROR":
+            logger.warning("Got error from client: {}".format(
+                message.get("message", None)))
+            ret = False
         else:
             logger.warning("Invalid message type: {}".format(message["type"]))
             ret = False
@@ -166,6 +172,31 @@ class ClientHandler(asyncio.Protocol):
             self.state = STATE_CLOSE
             self.transport.close()
 
+    def authenticate(self, message):
+        if self.state != STATE_CONNECT:
+            logger.warning("Invalid state. Discarding")
+            return False
+
+        logger.info("Authenticating server")
+
+        nonce = base64.b64decode(message.get('nonce', None).encode())
+        private_key = load_private_key_file("server_pk/Sio-Server.pem")
+        signed_nonce = sign_with_pk(private_key, nonce)
+        
+        certificate = load_cert_from_disk("server_self_certs/Sio-Server.pem", return_object=False)
+
+        message = {
+            "type": "SERVER_AUTH",
+            "data": {
+                "certificate": base64.b64encode(certificate).decode(),
+                "sign_nonce": base64.b64encode(signed_nonce).decode()
+            }
+        }
+        self._send(message)
+        
+        self.state = SERVER_AUTH
+        return True        
+
     def request_login_message(self):
         data = {}
         
@@ -181,8 +212,8 @@ class ClientHandler(asyncio.Protocol):
             "data": data
         }
 
-    def send_auth_type(self, message):
-        if self.state != STATE_CONNECT:
+    def send_auth_type(self):
+        if self.state != SERVER_AUTH:
             logger.warning("Invalid state. Discarding")
             return False
 

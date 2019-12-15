@@ -16,6 +16,8 @@ from cryptography.x509.oid import ExtensionOID
 from cryptography.exceptions import InvalidSignature
 from cryptography.x509 import ocsp
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509.extensions import CRLDistributionPoints,AuthorityInformationAccess
+from cryptography.hazmat.primitives.hashes import SHA1
 import requests
 
 # States common betwen the server and the client
@@ -28,6 +30,7 @@ LOGIN = 7
 LOGIN_FINISH = 9
 ACCESS_CHECKED = 10
 STATE_AUTH = 11
+SERVER_AUTH = 12
 
 # Client's states
 STATE_KEY = 4
@@ -268,10 +271,16 @@ def verify_signature(certificate, signature, nonce):
     return True
 
 
-def load_cert_from_disk(file_name):
-   with open(file_name, 'rb') as file:
-      pem_data = file.read()
-   return x509.load_pem_x509_certificate(pem_data, default_backend())
+def certificate_object_from_pem(pem_data):
+    return x509.load_pem_x509_certificate(pem_data, default_backend())
+
+def load_cert_from_disk(file_name, return_object=True):
+    with open(file_name, 'rb') as file:
+        pem_data = file.read()
+
+    if return_object:
+        return certificate_object_from_pem(pem_data)
+    return pem_data
 
 
 def load_certificates(path):
@@ -301,12 +310,12 @@ def construct_certificate_chain(chain, cert, certificates):
 
 
 def validate_certificate_chain(chain):
-    # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
-    
     error_messages = []
     try:
-        return (validate_purpose_certificate_chain(chain,error_messages) and validate_cm_certificate_chain(chain, error_messages)
-                and validate_validity_certificate_chain(chain, error_messages) and validate_revocation_certificate_chain(chain,error_messages) 
+        # taking advantage of the python's lazy evaluation, we could define the validation order just with this instruction
+        return (validate_purpose_certificate_chain(chain,error_messages)
+                and validate_validity_certificate_chain(chain, error_messages) 
+                and validate_revocation_certificate_chain_crl(chain,error_messages) 
                 and validate_signatures_certificate_chain(chain, error_messages)), error_messages
     except Exception as e:
         error_messages.append("Some error occurred while verifying certificate chain")
@@ -327,10 +336,6 @@ def validate_purpose_certificate_chain(chain, error_messages):
     return result
 
 
-def validate_cm_certificate_chain(chain, error_messages):
-    return True
-
-
 def validate_validity_certificate_chain(chain, error_messages):
     for cert in chain:
         dates = (cert.not_valid_before.timestamp(), cert.not_valid_after.timestamp())
@@ -342,28 +347,60 @@ def validate_validity_certificate_chain(chain, error_messages):
     return True
 
 
+def is_certificate_revoked(serial_number, crl_url):
+    r = requests.get(crl_url)
+    try:
+        crl = x509.load_der_x509_crl(r.content, default_backend())
+    except ValueError as e:
+        crl = x509.load_pem_x509_crl(r.content, default_backend())
+    return crl.get_revoked_certificate_by_serial_number(serial_number) is not None
+
+
+# mWLLjqFfm2ArJ8drgABM6cu84ABc
+def validate_revocation_certificate_chain_crl(chain, error_messages):
+    for i in range(1, len(chain)):
+        subject = chain[i - 1]
+        issuer = chain[i]
+        for e in issuer.extensions:
+            if isinstance(e.value, CRLDistributionPoints):
+                crl_url = e.value._distribution_points[0].full_name[0].value
+                if is_certificate_revoked(subject.serial_number,crl_url):
+                    error_messages.append("One of the certificates is revoked")
+                    return False
+    return True
+
+
 def validate_revocation_certificate_chain(chain, error_messages):
-    return True                                                             # TODO -> PARA MUDAR
+    # a failed try to use ocsp validation
     for i in range(1, len(chain)):
         subject = chain[i - 1]
         issuer = chain[i]
         builder = ocsp.OCSPRequestBuilder()
-        builder = builder.add_certificate(subject, issuer, subject.signature_hash_algorithm)
+        
+        builder = builder.add_certificate(subject, issuer, SHA1())
         req = builder.build()
         data = req.public_bytes(serialization.Encoding.DER)
 
-        for i in subject.extensions:
-            if hasattr(i.value, "_descriptions"):
-                had_ocsp = True
-                url = i.value._descriptions[0].access_location.value
+        for e in subject.extensions:
+            
+            if isinstance(e.value,AuthorityInformationAccess):
+                url = e.value._descriptions[0].access_location.value
+                print(url)
                 headers = {"Content-Type": "application/ocsp-request"}
                 r = requests.post(url, data=data, headers=headers )
                 ocsp_resp = ocsp.load_der_ocsp_response(r.content)
                 print(ocsp_resp.certificate_status)
-                if ocsp_resp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL or ocsp_resp.certificate_status != ocsp.OCSPCertStatus.GOOD :
-                    error_messages.append("One of the certificates is revoked")
+
+                if ocsp_resp.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL:
+                    if ocsp_resp.certificate_status == ocsp.OCSPCertStatus.UNKNOWN:
+                        status = validate_revocation_certificate_chain_crl([subject,issuer],error_messages)
+                        if not status:
+                            return False
+                    elif ocsp_resp.certificate_status == ocsp.OCSPCertStatus.REVOKED:
+                        error_messages.append("One of the certificates is revoked")
+                        return False
+                else:
                     return False
-        
     return True
 
 
@@ -392,3 +429,14 @@ def certificate_hasnt_purposes(certificate, purposes):
         result &= not getattr(certificate.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value, purpose)
 
     return result
+
+def load_private_key_file(path):
+    with open(path, "rb") as key_file:
+        return serialization.load_pem_private_key(
+            key_file.read(),
+            password=None,
+            backend=default_backend()
+        )
+
+def sign_with_pk(pk, nonce):
+    return pk.sign(nonce, padding.PKCS1v15(), hashes.SHA1())
