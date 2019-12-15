@@ -72,9 +72,6 @@ class ClientProtocol(asyncio.Protocol):
 
         logger.debug("Connected to Server")
 
-        # send a list of all algorithms
-        # TODO -> MUDAR ISTO DE LUGAR
-        # self.send_algorithm()
         self.first_connection()
 
     def data_received(self, data: str) -> None:
@@ -121,8 +118,6 @@ class ClientProtocol(asyncio.Protocol):
             logger.exception("Could not decode the JSON message")
             self.transport.close()
             return
-
-        print(f"{message}\n\n")
 
         mtype = message.get("type", None)
         if mtype == "AUTH_TYPE":
@@ -282,7 +277,7 @@ class ClientProtocol(asyncio.Protocol):
         self.state = LOGIN_FINISH
 
     def generate_new_otp(self, password, root, index):
-        password_derivation = key_derivation("SHA256", 64, password.encode())       # TODO -> METER ISTO MAIS BONITO
+        password_derivation = key_derivation("SHA256", 64, password.encode())
         return skey_generate_otp(root, password_derivation, "SHA256", index)
 
     def process_DH(self):
